@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# Runtime-only outputs (L4): do not track in GitHub.
+session_logs/*
+!session_logs/.gitkeep
+cache/*
+!cache/.gitkeep
