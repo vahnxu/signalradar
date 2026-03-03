@@ -31,7 +31,7 @@ metadata:
         description: "Notion page ID (32-char hex). Only needed for watchlist-refresh mode."
         howToGet: "Open the target Notion page in browser → look at the URL → copy the 32-character hex string after the page title (e.g. https://notion.so/My-Page-abc123def456... → the hex part is the ID)"
   author: Felix Xu
-  version: 1.0.0
+  version: 0.2.0
 ---
 
 # SignalRadar
@@ -44,7 +44,7 @@ When presenting SignalRadar results to the user:
 - **For HIT results**: highlight the market question, direction of change, and magnitude. Example: "GPT-5 release by June 2026 jumped from 32% to 41% (+9pp), crossing the 5pp threshold."
 - **For BASELINE results**: tell the user "First run — baselines recorded for N markets. Run again later to detect changes." Do not present BASELINE as a problem.
 - **For NO_REPLY results**: briefly confirm "No markets crossed the threshold" — do not dump raw JSON.
-- **Never modify** `cache/`, `config/`, or baseline files unless the user explicitly asks.
+- **Do not manually edit or delete** `cache/`, `config/`, or baseline files unless the user explicitly asks. Note: normal runs automatically write baseline and cache files as part of standard operation — this is expected behavior, not a modification you need to initiate.
 - **Never create cron jobs** or scheduled tasks automatically. Always confirm with the user first.
 - **Do not re-run** monitoring in a loop. Run once per user request unless told otherwise.
 - When the user says "check markets" or "any market signals", run `--mode ai` as the default unless a specific mode is requested.
@@ -143,6 +143,18 @@ SignalRadar works out of the box with sensible defaults. All configuration is op
 - **`webhook:https://example.com/hook`** — HTTP POST to external endpoint
 
 For full configuration reference, see `references/config.md`.
+
+## Local State (What This Skill Writes)
+
+During normal operation (without `--dry-run`), SignalRadar writes the following local files:
+
+| Path | Purpose | When written |
+|------|---------|--------------|
+| `cache/baselines/*.json` | Stores last-seen probability for each market | Every non-dry-run, to enable change detection |
+| `cache/events/*.jsonl` | Audit log of all decisions (HIT/SILENT/BASELINE) | Every non-dry-run |
+| `memory/polymarket_watchlist_2026.md` | Watchlist table for `ai` mode | Only by `watchlist-refresh` mode |
+
+Use `--dry-run` to fetch and evaluate without writing any state. No files outside the skill directory are modified.
 
 ## Scheduling (Optional)
 

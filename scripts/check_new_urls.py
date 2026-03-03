@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Detect newly-pasted Polymarket URLs in the Notion Database and auto-fill.
 
-Designed to run as a lightweight scheduled job every 5 minutes.
+Run manually or via user-configured cron when needed (not auto-scheduled).
 
 Workflow:
   1. Query the SignalRadar_Watchlist Database for all rows.
