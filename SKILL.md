@@ -31,7 +31,7 @@ metadata:
         description: "Notion page ID (32-char hex). Only needed for watchlist-refresh mode."
         howToGet: "Open the target Notion page in browser → look at the URL → copy the 32-character hex string after the page title (e.g. https://notion.so/My-Page-abc123def456... → the hex part is the ID)"
   author: Felix Xu
-  version: 0.2.0
+  version: 0.3.0
 ---
 
 # SignalRadar

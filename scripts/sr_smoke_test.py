@@ -7,7 +7,6 @@ Runs run_signalradar_job.py in --dry-run mode to verify:
 
 Pass condition: dry-run exits 0 for tested modes.
 
-NOTE: As of 2026-02, SignalRadar no longer uses openclaw cron.
 This smoke test invokes the job script directly.
 """
 
@@ -71,7 +70,7 @@ def run_dry(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="SignalRadar connectivity smoke test (standalone, no cron)")
+    p = argparse.ArgumentParser(description="SignalRadar connectivity smoke test (standalone)")
     p.add_argument("--workspace-root", default=default_workspace_root(), help="Workspace root directory")
     p.add_argument("--modes", default="ai", help="Comma-separated modes to test (default: ai)")
     p.add_argument("--timeout", type=int, default=30, help="Timeout per dry-run in seconds (default 30)")

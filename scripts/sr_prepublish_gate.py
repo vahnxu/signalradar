@@ -4,7 +4,6 @@
 Verifies SignalRadar is in a publishable state by running a dry-run
 across configured modes.
 
-NOTE: As of 2026-02, SignalRadar no longer depends on platform scheduler runtime logs.
 The gate validates unified CLI behavior and structured RunResult output.
 """
 
@@ -91,7 +90,7 @@ def run_doctor(workspace_root: str, timeout_sec: int) -> tuple[bool, dict[str, A
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="SignalRadar prepublish gate (standalone, no cron)")
+    p = argparse.ArgumentParser(description="SignalRadar prepublish gate (standalone)")
     p.add_argument("--workspace-root", default=default_workspace_root(), help="Workspace root directory")
     p.add_argument("--modes", default="ai", help="Comma-separated modes to gate-check (default: ai)")
     p.add_argument("--timeout", type=int, default=60, help="Timeout per dry-run in seconds (default 60)")

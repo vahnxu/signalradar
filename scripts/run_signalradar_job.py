@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run SignalRadar Polymarket monitoring jobs in production mode.
+"""Run SignalRadar Polymarket monitoring jobs.
 
-This wrapper keeps cron-facing behavior stable:
+Behavior:
 - prints NO_REPLY when nothing should be pushed
 - prints concise HIT summary when threshold events exist
 - supports job modes: ai/crypto/geopolitics/watchlist-refresh
