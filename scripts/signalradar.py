@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SignalRadar v0.5.0 unified CLI entrypoint.
 
-Commands: doctor, add, list, remove, run
+Commands: doctor, add, list, remove, run, config
 Single source of truth: config/watchlist.json
 """
 
@@ -268,8 +268,71 @@ def cmd_add(args: argparse.Namespace) -> int:
         config = _load_config(args.config)
         interval = config.get("check_interval_minutes", 10)
         print(f"\nMonitoring frequency: every {interval} minutes (default).")
-        print("To change: edit check_interval_minutes in config/signalradar_config.json")
+        print("To change: signalradar.py config check_interval_minutes 20")
 
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_config
+# ---------------------------------------------------------------------------
+
+def cmd_config(args: argparse.Namespace) -> int:
+    cfg_path = _config_path(args.config)
+    user_cfg = load_json_config(cfg_path)
+
+    # No key specified: show current config
+    if not args.key:
+        merged = deep_merge(DEFAULT_CONFIG, user_cfg)
+        if args.output == "json":
+            _json_print(merged)
+        else:
+            print("Current config:\n")
+            for k, v in sorted(merged.items()):
+                if isinstance(v, dict):
+                    print(f"  {k}:")
+                    for k2, v2 in sorted(v.items()):
+                        print(f"    {k2}: {v2}")
+                else:
+                    print(f"  {k}: {v}")
+            print(f"\nConfig file: {cfg_path}")
+        return 0
+
+    key = args.key
+
+    # No value specified: show current value for that key
+    if args.value is None:
+        merged = deep_merge(DEFAULT_CONFIG, user_cfg)
+        if key in merged:
+            print(f"{key}: {merged[key]}")
+        else:
+            print(f"Unknown key: {key}")
+            return 1
+        return 0
+
+    # Set value
+    raw_value = args.value
+    # Auto-detect type: int, float, or string
+    parsed_value: Any
+    try:
+        parsed_value = int(raw_value)
+    except ValueError:
+        try:
+            parsed_value = float(raw_value)
+        except ValueError:
+            parsed_value = raw_value
+
+    user_cfg[key] = parsed_value
+
+    # Write config (atomic)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        json.dumps(user_cfg, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"Set {key} = {parsed_value}")
+    print(f"Saved to {cfg_path}")
     return 0
 
 
@@ -653,7 +716,7 @@ def _onboarding(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
     interval = config.get("check_interval_minutes", 10)
     print(f"\nMonitoring frequency: every {interval} minutes (default).")
-    print("To change: edit check_interval_minutes in config/signalradar_config.json")
+    print("To change: signalradar.py config check_interval_minutes 20")
     print("Note: higher frequency = more API requests and more frequent alerts.")
 
     print(
@@ -690,7 +753,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     Moves global flags that appear before the subcommand to after it,
     so argparse subparsers can parse them correctly.
     """
-    commands = {"doctor", "add", "list", "remove", "run"}
+    commands = {"doctor", "add", "list", "remove", "run", "config"}
     # Find subcommand position
     cmd_idx = None
     for i, arg in enumerate(argv):
@@ -752,6 +815,13 @@ def main() -> int:
     p_rm.add_argument("number", type=int, help="Entry number from 'list'")
     p_rm.add_argument("--yes", "-y", action="store_true", default=False, help="Skip confirmation")
 
+    # config
+    p_cfg = sub.add_parser("config", help="View or change settings")
+    p_cfg.add_argument("key", nargs="?", default="", help="Setting name (e.g. check_interval_minutes)")
+    p_cfg.add_argument("value", nargs="?", default=None, help="New value")
+    p_cfg.add_argument("--output", choices=["text", "json"], default="text")
+    p_cfg.add_argument("--config", default="", help="Path to config JSON")
+
     # run
     p_run = sub.add_parser("run", help="Check all entries for probability changes")
     p_run.add_argument("--dry-run", action="store_true", help="No side effects")
@@ -771,6 +841,8 @@ def main() -> int:
         return cmd_list(args)
     elif cmd == "remove":
         return cmd_remove(args)
+    elif cmd == "config":
+        return cmd_config(args)
     elif cmd == "run":
         return cmd_run(args)
     else:
