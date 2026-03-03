@@ -89,6 +89,73 @@ def run_doctor(workspace_root: str, timeout_sec: int) -> tuple[bool, dict[str, A
         return False, {"status": "error", "error": str(exc)}
 
 
+def check_package_hygiene(workspace_root: str) -> tuple[bool, dict[str, Any]]:
+    """Check that the published skill directory contains no internal/private files."""
+    skill_dir = Path(workspace_root) / "skills" / "signalradar"
+    if not skill_dir.is_dir():
+        return False, {"status": "error", "error": f"skill dir not found: {skill_dir}"}
+
+    issues: list[str] = []
+
+    # 1. Disallowed directories (should not exist in published package)
+    disallowed_dirs = ["dev-docs", "session_logs"]
+    for d in disallowed_dirs:
+        p = skill_dir / d
+        if p.is_dir():
+            files = list(p.glob("*.md"))
+            if files:
+                issues.append(f"directory '{d}/' contains {len(files)} files — move internal docs outside skill dir")
+
+    # 2. Check session_logs even if gitignored — clawhub publish packages from disk
+    sl = skill_dir / "session_logs"
+    if sl.is_dir():
+        md_files = [f for f in sl.iterdir() if f.suffix == ".md" and f.name != ".gitkeep"]
+        if md_files:
+            issues.append(f"session_logs/ has {len(md_files)} .md files on disk (gitignore does not prevent clawhub publish)")
+
+    # 3. Disallowed file patterns in references/
+    refs = skill_dir / "references"
+    if refs.is_dir():
+        for f in refs.iterdir():
+            if not f.is_file():
+                continue
+            name_lower = f.name.lower()
+            # Internal dev docs should not be in references/
+            for pattern in ["devspec", "runbook", "checklist", "publishing_guide", "lesson"]:
+                if pattern in name_lower:
+                    issues.append(f"references/{f.name} looks like an internal dev doc — move outside skill dir")
+
+    # 4. Scan all text files for sensitive patterns
+    # Sensitive pattern check: scan for hardcoded personal paths in non-gate scripts
+    skip_dirs = {"__pycache__", ".git", "cache", "node_modules"}
+    # Skip self (this gate script uses path patterns for detection, not as real paths)
+    self_name = Path(__file__).name
+    for root_path, dirs, filenames in os.walk(skill_dir):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for fname in filenames:
+            if fname == self_name:
+                continue
+            if not fname.endswith((".py", ".sh", ".md", ".json")):
+                continue
+            fpath = Path(root_path) / fname
+            try:
+                content = fpath.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            rel = fpath.relative_to(skill_dir)
+            for personal_prefix in ["/Users/", "/home/"]:
+                if personal_prefix in content:
+                    issues.append(f"{rel}: contains personal path ({personal_prefix})")
+
+    # 5. README.md check (Claude guide prohibits README.md in skill folder)
+    if (skill_dir / "README.md").exists():
+        issues.append("README.md exists in skill folder — prohibited by Claude Skill guide")
+
+    if issues:
+        return False, {"status": "fail", "issues": issues}
+    return True, {"status": "ok", "checks_passed": ["no_internal_docs", "no_sensitive_patterns", "no_readme"]}
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="SignalRadar prepublish gate (standalone)")
     p.add_argument("--workspace-root", default=default_workspace_root(), help="Workspace root directory")
@@ -114,6 +181,12 @@ def main() -> int:
     try:
         results: dict[str, dict[str, Any]] = {}
         all_ok = True
+
+        # Package hygiene check (must pass before publishing)
+        hygiene_ok, hygiene_entry = check_package_hygiene(args.workspace_root)
+        results["package_hygiene"] = hygiene_entry
+        if not hygiene_ok:
+            all_ok = False
 
         doctor_ok, doctor_entry = run_doctor(args.workspace_root, args.timeout)
         results["doctor"] = doctor_entry
