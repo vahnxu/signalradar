@@ -3,9 +3,10 @@ __pycache__/
 *.pyo
 *.pyd
 .DS_Store
+.env
 
-# Runtime-only outputs (L4): do not track in GitHub.
-session_logs/*
-!session_logs/.gitkeep
+# Runtime state (not tracked)
 cache/*
 !cache/.gitkeep
+memory/*
+!memory/.gitkeep

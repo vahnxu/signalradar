@@ -21,11 +21,11 @@
   },
   "delivery": {
     "primary": {
-      "channel": "openclaw",
-      "target": "direct"
+      "channel": "webhook",
+      "target": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
     },
     "fallback": [
-      "file:cache/signalradar/events/delivery_fallback.jsonl"
+      "file:cache/events/delivery_fallback.jsonl"
     ]
   },
   "source": {
