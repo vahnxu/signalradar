@@ -2,13 +2,13 @@
 name: signalradar
 description: >-
   Monitors Polymarket prediction markets for probability changes and sends
-  alerts when thresholds are crossed. Supports AI model releases, crypto,
-  and geopolitics categories. Use when user asks to "check prediction markets",
-  "monitor Polymarket", "track market probabilities", "set up market alerts",
-  or "watch AI/crypto/geopolitics predictions". Do NOT use for stock market
-  analysis, sports betting, or real-time trading signals.
-  监控 Polymarket 预测市场概率变化，超过阈值时推送通知。支持 AI 模型发布、加密货币、
-  地缘政治三大类别。不适用于股市分析、体育博彩或实时交易信号。
+  alerts when thresholds are crossed. Use when user asks to "add a Polymarket
+  market", "monitor Polymarket", "check prediction markets", "list my monitors",
+  "remove a monitor", "track market probabilities", or "run market check".
+  Accepts any Polymarket event URL. Do NOT use for stock market analysis,
+  sports betting, or real-time trading signals.
+  监控 Polymarket 预测市场概率变化，超过阈值时推送通知。接受任意 Polymarket 事件链接。
+  不适用于股市分析、体育博彩或实时交易信号。
 allowed-tools: "Bash(python3:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
@@ -21,91 +21,109 @@ metadata:
       pip: []
     primaryEnv: ""
     envHelp:
-      NOTION_API_KEY:
-        required: false
-        description: "Notion integration secret. Only needed for watchlist-refresh mode."
-        howToGet: "1. Go to https://www.notion.so/my-integrations\n2. Click 'New integration'\n3. IMPORTANT: Select 'Internal' type (NOT OAuth — OAuth requires company info and is for public apps)\n4. Name it anything (e.g. 'signalradar')\n5. Click 'Submit'\n6. Copy the 'Internal Integration Secret' (starts with ntn_)\n7. Go to your target Notion page → click '...' menu → 'Add connections' → select your integration"
-        url: "https://www.notion.so/my-integrations"
-      NOTION_PARENT_PAGE_ID:
-        required: false
-        description: "Notion page ID (32-char hex). Only needed for watchlist-refresh mode."
-        howToGet: "Open the target Notion page in browser → look at the URL → copy the 32-character hex string after the page title (e.g. https://notion.so/My-Page-abc123def456... → the hex part is the ID)"
       SIGNALRADAR_WORKSPACE_ROOT:
         required: false
-        description: "Override workspace root directory. Auto-detected from script location if not set. Only needed for non-standard directory layouts."
+        description: "Override workspace root directory. Auto-detected from script location if not set."
         howToGet: "Set to the absolute path of your workspace root, e.g. export SIGNALRADAR_WORKSPACE_ROOT=/path/to/workspace"
       SIGNALRADAR_CONFIG:
         required: false
-        description: "Override config file path. Defaults to config/signalradar_config.json under workspace root. Only needed if config is stored elsewhere."
+        description: "Override config file path. Defaults to config/signalradar_config.json under workspace root."
         howToGet: "Set to absolute path of your config JSON, e.g. export SIGNALRADAR_CONFIG=/path/to/signalradar_config.json"
-  author: Felix Xu
-  version: 0.4.0
+  author: vahnxu
+  version: 0.5.0
 ---
 
 # SignalRadar
 
-## AI Agent Instructions
+## Critical Rules
 
-When presenting SignalRadar results to the user:
-
-- **Always show the market question** (slug), current probability, baseline, and absolute change in percentage points.
-- **For HIT results**: highlight the market question, direction of change, and magnitude. Example: "GPT-5 release by June 2026 jumped from 32% to 41% (+9pp), crossing the 5pp threshold."
-- **For BASELINE results**: tell the user "First run — baselines recorded for N markets. Run again later to detect changes." Do not present BASELINE as a problem.
-- **For NO_REPLY results**: briefly confirm "No markets crossed the threshold" — do not dump raw JSON.
-- **Do not manually edit or delete** `cache/`, `config/`, or baseline files unless the user explicitly asks. Note: normal runs automatically write baseline and cache files as part of standard operation — this is expected behavior, not a modification you need to initiate.
-- **Never create cron jobs** or scheduled tasks automatically. Always confirm with the user first.
-- **Do not re-run** monitoring in a loop. Run once per user request unless told otherwise.
-- When the user says "check markets" or "any market signals", run `--mode ai` as the default unless a specific mode is requested.
+- **Do NOT auto-add monitoring entries.** User must explicitly provide a Polymarket URL.
+- **Do NOT create cron jobs** or scheduled tasks unless user explicitly asks.
+- **Do NOT manually edit** `cache/`, `config/watchlist.json`, or baseline files. Normal runs automatically write these — that is expected behavior.
+- **Do NOT run monitoring in a loop.** Run once per user request unless told otherwise.
 
 ## Quick Start
 
-### Install
-
 ```bash
+# Install (OpenClaw users)
 clawhub install signalradar
-```
 
-### Verify installation (two steps)
+# Or clone directly
+git clone https://github.com/vahnxu/signalradar.git && cd signalradar
 
-```bash
-# 1. Health check — confirms Python and network connectivity
+# 1. Health check
 python3 scripts/signalradar.py doctor --output json
 
-# 2. Dry-run — fetches live data but does not write state
-python3 scripts/signalradar.py run --mode ai --dry-run --output json
+# 2. Add your first market
+python3 scripts/signalradar.py add https://polymarket.com/event/your-market-here
+
+# 3. Run a check
+python3 scripts/signalradar.py run --dry-run --output json
 ```
 
-Expected: `doctor` returns `{"status": "HEALTHY", ...}`. Dry-run returns a JSON object with `status` being one of `NO_REPLY`, `HIT`, or `BASELINE`.
+## Common Tasks
 
-**First run note**: The very first run for any mode will return `BASELINE` — this is normal. SignalRadar records the current probability as a baseline on the first run. Run again later (e.g., after 1 hour) to detect changes against that baseline.
+### Add a market
 
-## Monitoring Modes
+```bash
+python3 scripts/signalradar.py add <polymarket-event-url> [--category <name>]
+```
 
-SignalRadar monitors three categories of Polymarket prediction markets. Each mode has its own curated watchlist.
+Flow: parse URL → query Polymarket API → show market question + current probability → user confirms → record baseline.
 
-| Mode | Command | What it covers |
-|------|---------|----------------|
-| **ai** | `python3 scripts/signalradar.py run --mode ai` | AI model releases, AGI timelines, AI regulation |
-| **crypto** | `python3 scripts/signalradar.py run --mode crypto` | Bitcoin, Ethereum, DeFi, stablecoin events |
-| **geopolitics** | `python3 scripts/signalradar.py run --mode geopolitics` | Elections, conflicts, sanctions, treaties |
-| **watchlist-refresh** | `python3 scripts/signalradar.py run --mode watchlist-refresh` | Refreshes watchlist by keyword-matching active Polymarket markets (requires Notion env vars). **Warning**: this auto-discovers markets by category keywords and may add 30-50 entries. Use `--dry-run` first to preview. |
+- If the event has multiple markets (e.g., different date brackets), all are added by default. User can refine afterward.
+- If some markets from the event are already monitored, only new ones are added.
+- If the market is settled/expired, a warning is shown but the user can still add it.
+- Category defaults to `default` if not specified. User is not prompted for category.
+- On first-ever add (empty watchlist), a brief explanation of the baseline concept is shown.
 
-Common flags:
+### List monitors
 
-- `--dry-run` — fetch and evaluate but do not write state or deliver alerts
-- `--output json` — machine-readable JSON output (recommended for AI agents)
-- `--config /path/to/config.json` — use a custom config file
+```bash
+python3 scripts/signalradar.py list [--category <name>] [--archived]
+```
+
+Shows all entries grouped by category with global sequential numbering. Each entry shows: number, question, current probability, baseline.
+
+`--archived` shows previously removed entries (preserved for export).
+
+### Remove a monitor
+
+```bash
+python3 scripts/signalradar.py remove <number>
+```
+
+Shows the entry name and asks for confirmation before removing. Removed entries are archived (moved to `archived` array in `config/watchlist.json`) with full history preserved.
+
+### Run a check
+
+```bash
+python3 scripts/signalradar.py run [--dry-run] [--output json]
+```
+
+Checks all active entries against Polymarket API. If probability change exceeds threshold, sends alert via configured delivery channel.
+
+- Settled/expired entries are skipped during run, with a summary at the end: "N entries settled, consider removing."
+- When multiple markets from the same event trigger simultaneously, they are grouped in the alert.
+- After a HIT is pushed, the baseline updates to the new probability value. The notification text includes "baseline updated to XX%."
+- `--dry-run` fetches and evaluates but writes no state.
+
+### Health check
+
+```bash
+python3 scripts/signalradar.py doctor --output json
+```
+
+Returns `{"status": "HEALTHY"}` if Python version and network connectivity are OK.
 
 ## Understanding Results
 
-Every run returns a JSON object. The `status` field indicates the outcome:
-
-| Status | Meaning | What happens |
-|--------|---------|--------------|
+| Status | Meaning | Action |
+|--------|---------|--------|
 | `BASELINE` | First observation for an entry | Baseline recorded; no alert sent |
-| `SILENT` | Change is below threshold | No alert sent |
-| `HIT` | Change exceeds threshold | Alert emitted via delivery adapter |
-| `NO_REPLY` | No entries crossed threshold this run | Nothing to report |
+| `HIT` | Change exceeds threshold | Alert sent via delivery channel; baseline updated |
+| `NO_REPLY` | No entries crossed threshold | Nothing to report |
+| `SILENT` | Change below threshold | No alert sent |
 
 ### HIT output example
 
@@ -117,6 +135,7 @@ Every run returns a JSON object. The `status` field indicates the outcome:
     {
       "entry_id": "polymarket:12345:gpt5-release-june:evt_67890",
       "slug": "gpt5-release-june",
+      "question": "GPT-5 released by June 30, 2026?",
       "current": 0.41,
       "baseline": 0.32,
       "abs_pp": 9.0,
@@ -128,99 +147,118 @@ Every run returns a JSON object. The `status` field indicates the outcome:
 }
 ```
 
-When presenting a HIT to the user, format it as:
-> **[slug]**: [baseline]% -> [current]% (+/-[abs_pp]pp) — [reason]
+When presenting a HIT to the user:
+> **GPT-5 released by June 30, 2026?**: 32% → 41% (+9pp), threshold 5pp crossed. Baseline updated to 41%.
 
-## Configuration
+### Same-event grouped HIT
 
-SignalRadar works out of the box with sensible defaults. All configuration is optional.
+When multiple markets from the same event trigger:
+> **Bitcoin price (March 31)** — 3 markets crossed threshold:
+> - BTC > $100k: 45% → 58% (+13pp), baseline updated to 58%
+> - BTC > $110k: 23% → 35% (+12pp), baseline updated to 35%
+> - BTC > $120k:  8% → 19% (+11pp), baseline updated to 19%
 
-### Key settings
+### Empty watchlist
+
+If there are no entries, run returns:
+```json
+{"status": "NO_REPLY", "message": "Watchlist is empty. Use 'signalradar.py add <url>' to add entries."}
+```
+
+## Configuration (Optional)
+
+All settings have sensible defaults. Configuration file: `config/signalradar_config.json`.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `threshold.abs_pp` | 5.0 | Global threshold in percentage points |
-| `threshold.per_category_abs_pp` | varies | Per-category override (e.g., AI: 4.0, Crypto: 8.0) |
-| `baseline.cleanup_ttl_days` | 45 | Auto-cleanup stale baselines after N days |
-| `delivery.primary.channel` | `openclaw` | Delivery adapter: `openclaw:direct`, `file:/path`, `webhook:https://...` |
+| `threshold.per_category_abs_pp` | `{}` | Per-category override, e.g. `{"AI": 4.0}` |
+| `threshold.per_entry_abs_pp` | `{}` | Per-entry override, key = entry_id |
+| `delivery.primary.channel` | `openclaw` | `openclaw`, `file`, or `webhook` |
+| `delivery.primary.target` | `direct` | Path (file) or URL (webhook) |
+| `digest.frequency` | `weekly` | `off` / `daily` / `weekly` / `biweekly` |
+| `baseline.cleanup_after_expiry_days` | 90 | Days after market end date to clean up baseline |
+| `profile.timezone` | `Asia/Shanghai` | Display timezone |
+| `profile.language` | `""` | Empty = follow platform; set value to override |
 
 ### Delivery adapters
 
-- **`openclaw:direct`** (default) — delivers to host messaging layer
-- **`file:/path/to/alerts.jsonl`** — appends alerts to a local JSONL file
-- **`webhook:https://example.com/hook`** — HTTP POST to external endpoint
+- **`openclaw`** (default) — delivers to OpenClaw platform messaging layer. No setup needed when installed via ClawHub.
+- **`file`** — appends alerts to a local JSONL file. Set `target` to file path.
+- **`webhook`** — HTTP POST to external endpoint. Set `target` to webhook URL (works with Slack, Discord, etc.).
+
+For standalone use (not via OpenClaw), set delivery to `file` or `webhook`.
 
 For full configuration reference, see `references/config.md`.
 
-## Local State (What This Skill Writes)
+## Periodic Report
 
-During normal operation (without `--dry-run`), SignalRadar writes the following local files:
+SignalRadar sends a periodic summary of all monitored entries (default: weekly). The report uses the same delivery channel as HIT alerts.
+
+Contents:
+- All entries with current probability and change since last report
+- Settled/expired entries marked with a recommendation to remove
+- Next report date
+
+Frequency is controlled by `digest.frequency` in config.
+
+## Local State (What This Skill Writes)
 
 | Path | Purpose | When written |
 |------|---------|--------------|
-| `cache/baselines/*.json` | Stores last-seen probability for each market | Every non-dry-run, to enable change detection |
-| `cache/events/*.jsonl` | Audit log of all decisions (HIT/SILENT/BASELINE) | Every non-dry-run |
-| `memory/polymarket_watchlist_2026.md` | Watchlist table for `ai` mode | Only by `watchlist-refresh` mode |
+| `config/watchlist.json` | Monitored entries + archived entries | By `add` and `remove` commands |
+| `cache/baselines/*.json` | Last-seen probability per market | Every non-dry-run check |
+| `cache/events/*.jsonl` | Audit log of all decisions | Every non-dry-run check |
 
-Use `--dry-run` to fetch and evaluate without writing any state. No files outside the skill directory are modified.
+- `--dry-run` fetches and evaluates without writing any state.
+- Users may hand-edit `config/watchlist.json` (e.g., to change categories). The system tolerates manual edits.
+- No files outside the skill directory are modified.
 
 ## Scheduling (Optional)
 
-SignalRadar does not create scheduled tasks automatically. If the user wants periodic monitoring, they can set up system cron:
+SignalRadar does not create scheduled tasks automatically. For periodic monitoring:
 
 ```bash
-# Every hour — AI monitoring
-0 * * * * cd /path/to/workspace && python3 skills/signalradar/scripts/signalradar.py run --mode ai
-
-# Every 4 hours — Crypto
-0 */4 * * * cd /path/to/workspace && python3 skills/signalradar/scripts/signalradar.py run --mode crypto
-
-# Every 6 hours — Geopolitics
-0 */6 * * * cd /path/to/workspace && python3 skills/signalradar/scripts/signalradar.py run --mode geopolitics
+# Every hour
+0 * * * * cd /path/to/signalradar && python3 scripts/signalradar.py run
 ```
-
-## Optional: Notion Integration
-
-The `watchlist-refresh` mode syncs the monitoring watchlist from a Notion database. This is the **only mode that requires environment variables**.
-
-### Setup
-
-1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) and click "New integration"
-2. **Select "Internal" type** (NOT OAuth — OAuth is for public apps and requires company info)
-3. Name it anything (e.g., "signalradar"), click "Submit"
-4. Copy the "Internal Integration Secret" (starts with `ntn_`)
-5. Open your target Notion page, click "..." menu, select "Add connections", choose your integration
-6. Copy the page ID from the URL (the 32-character hex string after the page title)
-7. Set environment variables:
-
-```bash
-export NOTION_API_KEY="ntn_xxxxxxxxxxxx"
-export NOTION_PARENT_PAGE_ID="32-character-hex-from-page-url"
-```
-
-8. **Preview first** (recommended): `python3 scripts/signalradar.py run --mode watchlist-refresh --dry-run`
-9. Run: `python3 scripts/signalradar.py run --mode watchlist-refresh`
-
-**Important**: `watchlist-refresh` auto-discovers markets by keyword matching across all active Polymarket markets. It will add 30-50 entries based on configured categories (AI, crypto, geopolitics). To customize which markets are discovered, edit `config/watchlist_keywords.json`.
 
 ## Troubleshooting
 
 | Error Code | Cause | Fix |
 |------------|-------|-----|
-| `SR_TIMEOUT` | Polymarket API did not respond within timeout | Check network connectivity; retry after 30s. If persistent, the API may be down. |
-| `SR_SOURCE_UNAVAILABLE` | Cannot reach `gamma-api.polymarket.com` | Verify DNS resolution and internet access. Check if a proxy/VPN is blocking the request. |
-| `SR_VALIDATION_ERROR` | Malformed entry data or schema mismatch | Run `python3 scripts/validate_schema.py` to identify the invalid field. Check `config/watchlist_keywords.json`. |
-| `SR_ROUTE_FAILURE` | Delivery adapter failed to send alert | Check delivery config in `config.json`. For webhook: verify endpoint is reachable. For file: verify write permissions. |
-| `SR_CONFIG_CONFLICT` | Contradictory config values | Review `config.json` for duplicate keys or invalid combinations. See `references/config.md`. |
-| `SR_PERMISSION_DENIED` | Insufficient permissions for Notion API | Re-check `NOTION_API_KEY` and ensure the integration has access to the target page. |
-| `SR_AUTH_MISSING` | Required Notion env vars not set | Set `NOTION_API_KEY` and `NOTION_PARENT_PAGE_ID`. Only needed for `watchlist-refresh` mode. |
-| `SR_NOTION_PAGE_NOT_FOUND` | Notion page ID does not exist or is not shared | Verify `NOTION_PARENT_PAGE_ID` is correct (32-char hex). Ensure page is shared with the integration. |
-| `SR_NOTION_READ_FAILURE` | Failed to read from Notion API | Check Notion API status. Verify the integration has read access to the page. |
-| `SR_NOTION_WRITE_FAILURE` | Failed to write to Notion API | Check Notion API status. Verify the integration has write (insert content) permission. |
+| `SR_TIMEOUT` | Polymarket API timeout | Check network; retry after 30s |
+| `SR_SOURCE_UNAVAILABLE` | Cannot reach gamma-api.polymarket.com | Verify DNS and internet access |
+| `SR_VALIDATION_ERROR` | Malformed entry data | Run `python3 scripts/validate_schema.py` to identify the invalid field |
+| `SR_ROUTE_FAILURE` | Delivery adapter failed | Check delivery config. Webhook: verify endpoint. File: verify write permissions |
+| `SR_CONFIG_CONFLICT` | Contradictory config values | Review config for duplicate keys. See `references/config.md` |
+| `SR_PERMISSION_DENIED` | Insufficient permissions | Check file permissions on config/ and cache/ directories |
+
+## AI Agent Instructions (Complete)
+
+### Presenting results
+
+- **HIT**: Always show market question, probability change (old% → new%), magnitude in pp, and "baseline updated to X%". Group by event when multiple markets from the same event trigger.
+- **BASELINE**: Tell the user "First run — baselines recorded for N markets. Run again later to detect changes." Do not present BASELINE as a problem.
+- **NO_REPLY**: Briefly confirm "No markets crossed the threshold." Do not dump raw JSON.
+- **Empty watchlist**: Guide the user to add entries: "No entries being monitored. Add a market with: `signalradar.py add <polymarket-url>`"
+
+### Prohibited actions
+
+- Do not auto-discover or suggest markets to add. Wait for user to provide URLs.
+- Do not create cron jobs or scheduled tasks without explicit user request.
+- Do not manually edit `cache/`, `config/watchlist.json`, or baseline files.
+- Do not re-run monitoring in a loop.
+- Do not assume a mode — there are no modes. Just run `signalradar.py run`.
+- Do not mention or attempt to use Notion integration (removed in v0.5.0).
+
+### Language handling
+
+- System messages (prompts, confirmations, status text) follow platform language or `profile.language` setting.
+- Market questions are always displayed in their original English text from Polymarket API. Do not translate market questions.
 
 ## References
 
 - `references/config.md` — Full configuration reference
 - `references/protocol.md` — Data contract (EntrySpec, SignalEvent, DeliveryEnvelope)
-- `references/operations.md` — SLO targets, retry policy, observability requirements
-- `references/notion-sync.md` — Notion integration details
+- `references/operations.md` — SLO targets, retry policy

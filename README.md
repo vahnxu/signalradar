@@ -2,7 +2,7 @@
 
 Monitor Polymarket prediction markets for probability changes. Get alerts when thresholds are crossed.
 
-Covers **AI model releases**, **crypto**, and **geopolitics** categories. Zero dependencies (Python stdlib only).
+You choose exactly which markets to monitor by providing Polymarket URLs. Zero dependencies (Python stdlib only).
 
 ## Quick Start
 
@@ -13,38 +13,49 @@ cd signalradar
 # Health check
 python3 scripts/signalradar.py doctor --output json
 
-# Run AI market monitoring (dry-run, no side effects)
-python3 scripts/signalradar.py run --mode ai --dry-run --output json
+# Add a market to monitor
+python3 scripts/signalradar.py add https://polymarket.com/event/gpt5-release-june
+
+# Run a check (dry-run, no side effects)
+python3 scripts/signalradar.py run --dry-run --output json
 ```
 
-First run returns `BASELINE` (records current probabilities). Run again later to detect changes.
+First run records baselines. Run again later to detect changes.
 
 ## How It Works
 
 ```
-Polymarket API  --->  SignalRadar  --->  Delivery Adapter
-(live data)          (detect change)     (alert you)
+User adds URL  --->  SignalRadar  --->  Delivery Adapter
+                     (detect change)    (alert you)
                      threshold check
 ```
 
-SignalRadar fetches live market data, compares against recorded baselines, and sends alerts when probability changes exceed your threshold (default: 5 percentage points).
+1. You add markets by URL (`add`)
+2. SignalRadar fetches live probability from Polymarket API
+3. Compares against recorded baseline
+4. Sends alert when change exceeds threshold (default: 5 percentage points)
+5. Baseline updates after each alert
 
-## Monitoring Modes
+## Commands
 
 ```bash
-# AI models, AGI timelines, AI regulation
-python3 scripts/signalradar.py run --mode ai
+# Add a market (supports multi-market events)
+python3 scripts/signalradar.py add <polymarket-url> [--category AI]
 
-# Bitcoin, Ethereum, DeFi
-python3 scripts/signalradar.py run --mode crypto
+# List all monitored entries
+python3 scripts/signalradar.py list
 
-# Elections, conflicts, sanctions
-python3 scripts/signalradar.py run --mode geopolitics
+# Remove an entry by number
+python3 scripts/signalradar.py remove 3
+
+# Run a check
+python3 scripts/signalradar.py run [--dry-run] [--output json]
+
+# Health check
+python3 scripts/signalradar.py doctor --output json
 ```
 
 ## Delivery: Get Alerts Your Way
-
-SignalRadar supports three delivery adapters. **Webhook is the recommended method for most users.**
 
 ### Webhook (Slack, Discord, Telegram, etc.)
 
@@ -59,7 +70,7 @@ SignalRadar supports three delivery adapters. **Webhook is the recommended metho
 }
 ```
 
-Save as `config/signalradar_config.json`. Works with any service that accepts HTTP POST webhooks.
+Save as `config/signalradar_config.json`.
 
 ### File (local JSONL log)
 
@@ -81,14 +92,8 @@ Default when installed via ClawHub. See [OpenClaw install](#openclaw-install) be
 ## Automated Monitoring with Cron
 
 ```bash
-# Every hour - AI markets
-0 * * * * cd /path/to/signalradar && python3 scripts/signalradar.py run --mode ai
-
-# Every 4 hours - Crypto
-0 */4 * * * cd /path/to/signalradar && python3 scripts/signalradar.py run --mode crypto
-
-# Every 6 hours - Geopolitics
-0 */6 * * * cd /path/to/signalradar && python3 scripts/signalradar.py run --mode geopolitics
+# Every hour
+0 * * * * cd /path/to/signalradar && python3 scripts/signalradar.py run
 ```
 
 ## Understanding Results
@@ -97,12 +102,12 @@ Default when installed via ClawHub. See [OpenClaw install](#openclaw-install) be
 |--------|---------|
 | `BASELINE` | First observation. Baseline recorded, no alert. |
 | `SILENT` | Change below threshold. No alert. |
-| `HIT` | Threshold crossed. Alert sent. |
+| `HIT` | Threshold crossed. Alert sent. Baseline updated. |
 | `NO_REPLY` | No markets crossed threshold. |
 
-Example HIT output:
+Example HIT:
 ```
-GPT-5 release by June 2026: 32% -> 41% (+9pp), crossing 5pp threshold
+GPT-5 release by June 2026: 32% -> 41% (+9pp), crossing 5pp threshold. Baseline updated to 41%.
 ```
 
 ## Configuration
@@ -112,25 +117,12 @@ All optional. Works out of the box with defaults.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `threshold.abs_pp` | 5.0 | Alert threshold in percentage points |
-| `threshold.per_category_abs_pp` | varies | Per-category override |
-| `baseline.cleanup_ttl_days` | 45 | Auto-cleanup stale baselines |
+| `threshold.per_category_abs_pp` | `{}` | Per-category override |
+| `delivery.primary.channel` | `openclaw` | Delivery adapter |
+| `digest.frequency` | `weekly` | Periodic report frequency |
+| `baseline.cleanup_after_expiry_days` | 90 | Baseline cleanup after market ends |
 
 See [`references/config.md`](references/config.md) for full reference.
-
-## Optional: Notion Watchlist
-
-The `watchlist-refresh` mode syncs your monitoring list from Notion. This is the only feature requiring environment variables.
-
-```bash
-export NOTION_API_KEY="ntn_xxxxxxxxxxxx"
-export NOTION_PARENT_PAGE_ID="32-char-hex-from-page-url"
-
-# Preview first
-python3 scripts/signalradar.py run --mode watchlist-refresh --dry-run
-
-# Apply
-python3 scripts/signalradar.py run --mode watchlist-refresh
-```
 
 ## OpenClaw Install
 

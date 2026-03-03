@@ -4,7 +4,7 @@
 
 - `BASELINE`: first observation; write baseline; do not push.
 - `SILENT`: change below threshold; do not push.
-- `HIT`: threshold crossed; emit `SignalEvent`; route delivery.
+- `HIT`: threshold crossed; emit `SignalEvent`; route delivery; update baseline.
 
 ## Time Rules
 
@@ -31,11 +31,9 @@ Recommended append-only file:
 - Delivery success rate >= 98%
 - p95 end-to-end latency < 30s
 - Trace completeness = 100%
-- Duplicate push rate < 1 per 2h per entry (when dedup enabled)
 
 ## Retry and Degrade
 
 - Retry upstream/timeouts with bounded exponential backoff.
 - On exhausted retries: return structured error and degrade gracefully.
 - Do not silently drop critical failures.
-

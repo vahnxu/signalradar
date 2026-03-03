@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Compute SignalEvent objects from normalized snapshots and baseline cache."""
+"""Compute SignalEvent objects from normalized snapshots and baseline cache.
+
+v0.5.0: Extracts check_entry() as importable function. Baseline paths flattened
+(no mode subdirectory). safe_name() imported from discover_entries.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
-import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,12 +21,10 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def entry_id_for(row: dict[str, Any]) -> str:
-    return f"{row['source']}:{row['market_id']}:{row['slug']}:{row['event_id']}"
-
-
 def safe_name(entry_id: str) -> str:
-    return entry_id.replace("/", "_")
+    """Convert entry_id to filesystem-safe name. Handles : / \\ characters."""
+    import re
+    return re.sub(r"[:/\\]", "_", entry_id)
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -39,11 +39,6 @@ def save_json(path: Path, payload: Any) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
         f.write("\n")
-
-
-def is_inactive(row: dict[str, Any]) -> bool:
-    status = str(row.get("status", "active")).lower()
-    return status in {"closed", "resolved", "inactive", "expired"}
 
 
 def compute_rel_pct(current: float, baseline: float) -> float:
@@ -97,6 +92,125 @@ def cleanup_baselines(
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Importable function: check a single entry against baseline
+# ---------------------------------------------------------------------------
+
+def check_entry(
+    entry_id: str,
+    question: str,
+    current_prob: float,
+    baseline_dir: Path,
+    threshold_abs_pp: float,
+    *,
+    dry_run: bool = False,
+    audit_log_path: Path | None = None,
+) -> dict[str, Any]:
+    """Check one entry against its baseline.
+
+    Returns a decision dict:
+      {"decision": "BASELINE"|"HIT"|"SILENT", "event": {...}|None, ...}
+    """
+    baseline_file = baseline_dir / f"{safe_name(entry_id)}.json"
+    baseline_doc = load_json(baseline_file, None)
+
+    request_id = str(uuid.uuid4())
+    now = utc_now()
+
+    if baseline_doc is None:
+        # First time: initialize baseline
+        baseline_doc = {
+            "entry_id": entry_id,
+            "baseline": current_prob,
+            "baseline_ts": now,
+            "updated_by": "decide_threshold",
+            "update_reason": "baseline init",
+            "version": 1,
+        }
+        if not dry_run:
+            save_json(baseline_file, baseline_doc)
+
+        decision = "BASELINE"
+        result = {
+            "decision": decision,
+            "request_id": request_id,
+            "entry_id": entry_id,
+            "current": current_prob,
+            "baseline": current_prob,
+            "event": None,
+        }
+    else:
+        baseline = float(baseline_doc.get("baseline", current_prob))
+        baseline_ts = str(baseline_doc.get("baseline_ts", now))
+        abs_pp = abs(current_prob - baseline)
+        rel_pct = compute_rel_pct(current_prob, baseline)
+        hit = abs_pp >= threshold_abs_pp
+        decision = "HIT" if hit else "SILENT"
+
+        event = None
+        if hit:
+            event = {
+                "schema_version": "1.0.0",
+                "request_id": request_id,
+                "entry_id": entry_id,
+                "question": question,
+                "current": round(current_prob, 6),
+                "baseline": round(baseline, 6),
+                "abs_pp": round(abs_pp, 6),
+                "rel_pct": round(rel_pct, 6),
+                "threshold_abs_pp": threshold_abs_pp,
+                "reason": f"abs_pp {round(abs_pp, 1)} >= threshold {threshold_abs_pp}",
+                "ts": now,
+                "baseline_ts": baseline_ts,
+            }
+
+            # Update baseline to current value after HIT
+            next_version = int(baseline_doc.get("version", 1)) + 1
+            baseline_doc = {
+                "entry_id": entry_id,
+                "baseline": current_prob,
+                "baseline_ts": now,
+                "updated_by": "decide_threshold",
+                "update_reason": "HIT triggered, baseline updated",
+                "version": next_version,
+            }
+            if not dry_run:
+                save_json(baseline_file, baseline_doc)
+
+        result = {
+            "decision": decision,
+            "request_id": request_id,
+            "entry_id": entry_id,
+            "current": current_prob,
+            "baseline": baseline,
+            "abs_pp": round(abs_pp, 6) if hit else round(abs_pp, 6),
+            "event": event,
+        }
+
+    # Write audit log
+    if not dry_run and audit_log_path is not None:
+        audit_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with audit_log_path.open("a", encoding="utf-8") as af:
+            af.write(
+                json.dumps(
+                    {
+                        "ts": now,
+                        "request_id": request_id,
+                        "entry_id": entry_id,
+                        "decision": decision,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CLI (legacy, kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SignalRadar decide step")
     parser.add_argument("--snapshots", required=True, help="Normalized snapshots JSON file")
@@ -104,11 +218,10 @@ def main() -> int:
     parser.add_argument("--baseline-dir", default="cache/baselines", help="Baseline storage directory")
     parser.add_argument("--audit-log", default="cache/events/signal_events.jsonl", help="Audit log JSONL path")
     parser.add_argument("--threshold-abs-pp", type=float, default=5.0, help="Default abs_pp threshold")
-    parser.add_argument("--threshold-rel-pct", type=float, default=5.0, help="Aux rel_pct threshold")
     parser.add_argument("--emit-baseline-events", action="store_true", help="Emit baseline init records")
-    parser.add_argument("--cleanup-expired", action="store_true", help="Cleanup baselines for inactive/expired entries")
-    parser.add_argument("--cleanup-ttl-days", type=int, default=45, help="TTL days for baseline cleanup")
-    parser.add_argument("--dry-run", action="store_true", help="Compute events without mutating baseline/audit state")
+    parser.add_argument("--cleanup-expired", action="store_true", help="Cleanup baselines for inactive entries")
+    parser.add_argument("--cleanup-ttl-days", type=int, default=90, help="TTL days for baseline cleanup")
+    parser.add_argument("--dry-run", action="store_true", help="Compute events without mutating state")
     args = parser.parse_args()
 
     snapshots_path = Path(args.snapshots)
@@ -122,127 +235,36 @@ def main() -> int:
             raise ValueError("snapshots must be a JSON array")
 
         events: list[dict[str, Any]] = []
-        audit_log_path.parent.mkdir(parents=True, exist_ok=True)
         active_entry_ids: set[str] = set()
 
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            if is_inactive(row):
-                continue
+            source = str(row.get("source", "polymarket"))
+            market_id = str(row.get("market_id", ""))
+            slug = str(row.get("slug", ""))
+            event_id = str(row.get("event_id", ""))
+            question = str(row.get("question", ""))
+            entry_id = f"{source}:{market_id}:{slug}:{event_id}"
+            active_entry_ids.add(entry_id)
 
             try:
                 current = float(row["probability"])
             except Exception:
                 continue
-            source = str(row.get("source", "polymarket"))
-            market_id = str(row["market_id"])
-            slug = str(row["slug"])
-            event_id = str(row["event_id"])
-            question = str(row.get("question", ""))
-            entry_id = f"{source}:{market_id}:{slug}:{event_id}"
-            active_entry_ids.add(entry_id)
-            baseline_file = baseline_dir / f"{safe_name(entry_id)}.json"
-            baseline_doc = load_json(baseline_file, None)
 
-            request_id = str(uuid.uuid4())
-            now = utc_now()
+            result = check_entry(
+                entry_id=entry_id,
+                question=question,
+                current_prob=current,
+                baseline_dir=baseline_dir,
+                threshold_abs_pp=args.threshold_abs_pp,
+                dry_run=args.dry_run,
+                audit_log_path=audit_log_path,
+            )
 
-            if baseline_doc is None:
-                baseline_doc = {
-                    "entry_id": entry_id,
-                    "source": source,
-                    "baseline": current,
-                    "baseline_ts": now,
-                    "updated_by": "decide_threshold.py",
-                    "update_reason": "baseline init",
-                    "version": 1,
-                }
-                if not args.dry_run:
-                    save_json(baseline_file, baseline_doc)
-                decision = "BASELINE"
-                event = None
-                if args.emit_baseline_events:
-                    event = {
-                        "schema_version": "1.0.0",
-                        "request_id": request_id,
-                        "entry_id": entry_id,
-                        "source": source,
-                        "question": question,
-                        "current": current,
-                        "baseline": current,
-                        "abs_pp": 0.0,
-                        "rel_pct": 0.0,
-                        "threshold_abs_pp": args.threshold_abs_pp,
-                        "threshold_rel_pct": args.threshold_rel_pct,
-                        "confidence": "low",
-                        "reason": "baseline initialized",
-                        "ts": now,
-                        "baseline_ts": now,
-                    }
-                    events.append(event)
-            else:
-                baseline = float(baseline_doc.get("baseline", current))
-                baseline_ts = str(baseline_doc.get("baseline_ts", now))
-                abs_pp = abs(current - baseline)
-                rel_pct = compute_rel_pct(current, baseline)
-                row_threshold = row.get("threshold_abs_pp")
-                try:
-                    threshold_abs = float(row_threshold) if row_threshold is not None else float(args.threshold_abs_pp)
-                except (TypeError, ValueError):
-                    threshold_abs = float(args.threshold_abs_pp)
-                hit = abs_pp >= threshold_abs
-                decision = "HIT" if hit else "SILENT"
-                event = None
-                if hit:
-                    event = {
-                        "schema_version": "1.0.0",
-                        "request_id": request_id,
-                        "entry_id": entry_id,
-                        "source": source,
-                        "question": question,
-                        "current": round(current, 6),
-                        "baseline": round(baseline, 6),
-                        "abs_pp": round(abs_pp, 6),
-                        "rel_pct": round(rel_pct, 6),
-                        "threshold_abs_pp": threshold_abs,
-                        "threshold_rel_pct": args.threshold_rel_pct,
-                        "confidence": "high" if abs_pp >= max(2 * threshold_abs, 10.0) else "medium",
-                        "reason": "abs_pp crossed threshold",
-                        "ts": now,
-                        "baseline_ts": baseline_ts,
-                        "volume_24h": row.get("volume_24h"),
-                    }
-                    events.append(event)
-
-                    next_version = int(baseline_doc.get("version", 1)) + 1
-                    baseline_doc = {
-                        "entry_id": entry_id,
-                        "source": source,
-                        "baseline": current,
-                        "baseline_ts": now,
-                        "updated_by": "decide_threshold.py",
-                        "update_reason": "HIT triggered, new baseline set",
-                        "version": next_version,
-                    }
-                    if not args.dry_run:
-                        save_json(baseline_file, baseline_doc)
-
-            if not args.dry_run:
-                with audit_log_path.open("a", encoding="utf-8") as af:
-                    af.write(
-                        json.dumps(
-                            {
-                                "ts": now,
-                                "request_id": request_id,
-                                "entry_id": entry_id,
-                                "decision": decision,
-                                "source": source,
-                            },
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
+            if result["event"] is not None:
+                events.append(result["event"])
 
         removed = 0
         if args.cleanup_expired:
