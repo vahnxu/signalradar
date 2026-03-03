@@ -30,8 +30,16 @@ metadata:
         required: false
         description: "Notion page ID (32-char hex). Only needed for watchlist-refresh mode."
         howToGet: "Open the target Notion page in browser → look at the URL → copy the 32-character hex string after the page title (e.g. https://notion.so/My-Page-abc123def456... → the hex part is the ID)"
+      SIGNALRADAR_WORKSPACE_ROOT:
+        required: false
+        description: "Override workspace root directory. Auto-detected from script location if not set. Only needed for non-standard directory layouts."
+        howToGet: "Set to the absolute path of your workspace root, e.g. export SIGNALRADAR_WORKSPACE_ROOT=/path/to/workspace"
+      SIGNALRADAR_CONFIG:
+        required: false
+        description: "Override config file path. Defaults to config/signalradar_config.json under workspace root. Only needed if config is stored elsewhere."
+        howToGet: "Set to absolute path of your config JSON, e.g. export SIGNALRADAR_CONFIG=/path/to/signalradar_config.json"
   author: Felix Xu
-  version: 0.3.0
+  version: 0.4.0
 ---
 
 # SignalRadar
@@ -216,4 +224,3 @@ export NOTION_PARENT_PAGE_ID="32-character-hex-from-page-url"
 - `references/protocol.md` — Data contract (EntrySpec, SignalEvent, DeliveryEnvelope)
 - `references/operations.md` — SLO targets, retry policy, observability requirements
 - `references/notion-sync.md` — Notion integration details
-- `references/platform-adapters.md` — Platform adapter specifications

@@ -37,7 +37,7 @@ watchlist-refresh 运行时会自动创建或更新 `SignalRadar_Watchlist_DB` D
 - `SignalRadar_Manual_Entries`：可编辑（推荐在这里加条目）。
 - `polymarket_watchlist_2026`：部分可编辑（不建议改表头）。
 - `polymarket_rollover_2026`：只读。
-- ~~`signalradar_monitor_jobs`~~：已弃用（cron 解耦后不再导出）。
+- ~~`signalradar_monitor_jobs`~~：已弃用，不再导出。
 
 ## 4) 手动条目格式
 
