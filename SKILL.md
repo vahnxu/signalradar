@@ -1,14 +1,15 @@
 ---
 name: signalradar
 description: >-
-  Monitors Polymarket prediction markets for probability changes and sends
-  alerts when thresholds are crossed. Use when user asks to "add a Polymarket
-  market", "monitor Polymarket", "check prediction markets", "list my monitors",
-  "remove a monitor", "track market probabilities", or "run market check".
+  SignalRadar (信号雷达) — Monitors Polymarket prediction markets for probability
+  changes and sends alerts when thresholds are crossed.
+  监控 Polymarket 预测市场概率变化，超过阈值时推送通知。
+  Use when user asks to "add a Polymarket market", "monitor Polymarket",
+  "check prediction markets", "list my monitors", "remove a monitor",
+  "track market probabilities", or "run market check".
   Accepts any Polymarket event URL. Do NOT use for stock market analysis,
   sports betting, or real-time trading signals.
-  监控 Polymarket 预测市场概率变化，超过阈值时推送通知。接受任意 Polymarket 事件链接。
-  不适用于股市分析、体育博彩或实时交易信号。
+  接受任意 Polymarket 事件链接。不适用于股市分析、体育博彩或实时交易信号。
 allowed-tools: "Bash(python3:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
