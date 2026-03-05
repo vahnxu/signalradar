@@ -1,8 +1,8 @@
-# SignalRadar / 信号雷达
+# SignalRadar
 
-Monitor Polymarket prediction markets for probability changes. Get alerts when thresholds are crossed.
-
-监控 Polymarket 预测市场的概率变化，超过阈值时发送警报。
+> 信号雷达 — Monitor Polymarket prediction markets for probability changes. Get alerts when thresholds are crossed.
+>
+> 监控 Polymarket 预测市场概率变化，超过阈值时推送通知。
 
 You choose exactly which markets to monitor by providing Polymarket URLs. Zero dependencies (Python stdlib only).
 

@@ -33,7 +33,9 @@ metadata:
   version: 0.5.5
 ---
 
-# SignalRadar / 信号雷达
+# SignalRadar
+
+> 信号雷达 — 监控 Polymarket 预测市场概率变化，超过阈值时推送通知。
 
 ## Critical Rules / 关键规则
 
