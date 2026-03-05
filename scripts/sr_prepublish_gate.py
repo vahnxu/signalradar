@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Prepublish gate for SignalRadar v0.5.0.
+"""Prepublish gate for SignalRadar v0.5.3.
 
 Verifies SignalRadar is in a publishable state:
 1) Package hygiene (no internal docs, no personal paths)
 2) doctor → HEALTHY
 3) run --dry-run --yes --output json → valid output contract
+4) Document consistency (negative + positive assertions)
 """
 
 from __future__ import annotations
@@ -119,6 +120,41 @@ def check_package_hygiene() -> tuple[bool, dict[str, Any]]:
     return True, {"status": "ok"}
 
 
+def check_doc_consistency() -> tuple[bool, dict[str, Any]]:
+    """Check document consistency: negative assertions (old wording removed) + positive assertions."""
+    skill_dir = _find_skill_dir()
+    issues: list[str] = []
+
+    def _file_contains(rel_path: str, needle: str) -> bool:
+        fp = skill_dir / rel_path
+        if not fp.exists():
+            return False
+        try:
+            return needle in fp.read_text(encoding="utf-8")
+        except OSError:
+            return False
+
+    # --- Negative assertions (must NOT contain old wording) ---
+    if _file_contains("SKILL.md", "Do NOT create cron"):
+        issues.append("SKILL.md still contains old 'Do NOT create cron' prohibition")
+    if _file_contains("SKILL.md", "does not create scheduled tasks automatically"):
+        issues.append("SKILL.md still contains old 'does not create scheduled tasks' wording")
+    if _file_contains("CLAUDE.md", "Create cron jobs automatically"):
+        issues.append("CLAUDE.md still contains old 'Create cron jobs automatically' prohibition")
+
+    # --- Positive assertions (must contain new wording) ---
+    if not _file_contains("SKILL.md", "schedule"):
+        issues.append("SKILL.md missing 'schedule' keyword")
+    if not _file_contains("SKILL.md", "auto-monitoring") and not _file_contains("SKILL.md", "automatically enables"):
+        issues.append("SKILL.md missing auto-monitoring declaration")
+    if not _file_contains("README.md", "schedule"):
+        issues.append("README.md missing 'schedule' keyword")
+
+    if issues:
+        return False, {"status": "fail", "issues": issues}
+    return True, {"status": "ok"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SignalRadar prepublish gate")
     parser.add_argument("--timeout", type=int, default=60, help="Timeout per command")
@@ -146,7 +182,13 @@ def main() -> int:
     if not ok:
         all_ok = False
 
-    out: dict[str, Any] = {"ok": all_ok, "gate": "v0.5.0-prepublish", "results": results}
+    # 4. Document consistency
+    ok, entry = check_doc_consistency()
+    results["doc_consistency"] = entry
+    if not ok:
+        all_ok = False
+
+    out: dict[str, Any] = {"ok": all_ok, "gate": "v0.5.3-prepublish", "results": results}
     if args.json:
         print(json.dumps(out, ensure_ascii=False))
     else:

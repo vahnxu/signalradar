@@ -8,7 +8,7 @@ SignalRadar monitors Polymarket prediction markets for probability changes and s
 
 - **Entry point**: `scripts/signalradar.py` (CLI dispatcher)
 - **Core pipeline**: `run_signalradar_job.py` → ingest → decide → deliver
-- **Commands**: `doctor`, `add`, `list`, `remove`, `run`
+- **Commands**: `doctor`, `add`, `list`, `remove`, `run`, `config`, `schedule`
 - **Zero dependencies**: Python 3.9+ stdlib only (no pip packages)
 - **Data source**: Polymarket gamma API (`gamma-api.polymarket.com`)
 - **Watchlist storage**: `config/watchlist.json` (single source of truth)
@@ -44,7 +44,7 @@ python3 scripts/sr_prepublish_gate.py --json
 
 - Modify `cache/` or baseline files unless user explicitly asks
 - Auto-add markets — wait for user to provide URLs
-- Create cron jobs automatically
+- Create cron jobs outside of the `schedule` command flow
 - Assume `outcomePrices` is a Python list (it's a JSON string)
 - Put optional env vars in `requires.env` (use `envHelp` instead)
 - Use or mention Notion integration (removed in v0.5.0)

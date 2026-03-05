@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""SignalRadar v0.5.0 unified CLI entrypoint.
+"""SignalRadar v0.5.3 unified CLI entrypoint.
 
-Commands: doctor, add, list, remove, run, config
+Commands: doctor, add, list, remove, run, config, schedule
 Single source of truth: config/watchlist.json
 """
 
@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,9 +80,25 @@ def _audit_log_path() -> Path:
     return SKILL_ROOT / "cache" / "events" / "signal_events.jsonl"
 
 
+def _last_run_path() -> Path:
+    return SKILL_ROOT / "cache" / "last_run.json"
+
+
 def _load_config(override: str = "") -> dict[str, Any]:
     user_cfg = load_json_config(_config_path(override))
     return deep_merge(DEFAULT_CONFIG, user_cfg)
+
+
+def _save_config_key(override: str, key: str, value: Any) -> None:
+    """Write a single key to the user config file."""
+    cfg_path = _config_path(override)
+    user_cfg = load_json_config(cfg_path)
+    user_cfg[key] = value
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(
+        json.dumps(user_cfg, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +111,251 @@ def _json_print(payload: dict[str, Any]) -> None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Scheduling helpers (crontab + openclaw cron)
+# ---------------------------------------------------------------------------
+
+_CRON_TAG = "# signalradar-auto"
+_OPENCLAW_CRON_NAME = "SignalRadar Auto-Monitor"
+
+
+def _cron_command_line() -> str:
+    """Build the crontab command that runs SignalRadar."""
+    return (
+        f"cd {SKILL_ROOT} && python3 scripts/signalradar.py run --yes --output json "
+        f">> cache/cron.log 2>&1  {_CRON_TAG}"
+    )
+
+
+def _has_crontab() -> bool:
+    """Check if crontab command is available."""
+    return shutil.which("crontab") is not None
+
+
+def _read_crontab() -> str:
+    """Read current crontab. Returns empty string if none."""
+    try:
+        result = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            return ""
+        return result.stdout or ""
+    except Exception:
+        return ""
+
+
+def _write_crontab(content: str) -> bool:
+    """Write crontab from string content. Returns True on success."""
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".crontab", prefix="signalradar_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+            result = subprocess.run(
+                ["crontab", tmp], capture_output=True, text=True, timeout=10
+            )
+            return result.returncode == 0
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception:
+        return False
+
+
+def _setup_cron(interval_minutes: int, driver: str = "crontab") -> tuple[bool, str]:
+    """Set up auto-monitoring cron job. Returns (success, message)."""
+    if driver == "crontab":
+        if not _has_crontab():
+            return False, (
+                "Note: crontab not available in this environment.\n"
+                "To enable auto-monitoring, either:\n"
+                "  - Install crontab, then: signalradar.py schedule 10\n"
+                "  - Use openclaw: signalradar.py schedule 10 --driver openclaw\n"
+                "  - Run manually: signalradar.py run"
+            )
+
+        # Remove existing signalradar cron line, then add new one
+        existing = _read_crontab()
+        lines = [l for l in existing.splitlines() if _CRON_TAG not in l]
+        new_line = f"*/{interval_minutes} * * * * {_cron_command_line()}"
+        lines.append(new_line)
+        # Ensure trailing newline
+        content = "\n".join(lines).strip() + "\n"
+        if _write_crontab(content):
+            return True, f"Auto-monitoring enabled: every {interval_minutes} minutes (crontab)."
+        return False, "Failed to write crontab."
+
+    elif driver == "openclaw":
+        cmd = [
+            "openclaw", "cron", "add",
+            "--name", _OPENCLAW_CRON_NAME,
+            "--every", f"{interval_minutes}m",
+            "--session", "isolated",
+            "--message", (
+                f"Run SignalRadar monitoring: cd {SKILL_ROOT} && "
+                f"python3 scripts/signalradar.py run --yes --output json"
+            ),
+            "--no-deliver",
+            "--json",
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                try:
+                    payload = json.loads(result.stdout)
+                    if payload.get("ok"):
+                        return True, f"Auto-monitoring enabled: every {interval_minutes} minutes (openclaw cron)."
+                except json.JSONDecodeError:
+                    pass
+            stderr = (result.stderr or "").strip()
+            return False, f"Failed to create openclaw cron job. {stderr}"
+        except FileNotFoundError:
+            return False, "openclaw command not found."
+        except Exception as e:
+            return False, f"Error creating openclaw cron: {e}"
+
+    return False, f"Unknown driver: {driver}"
+
+
+def _remove_cron() -> tuple[bool, str]:
+    """Remove all signalradar cron jobs (both drivers). Returns (success, message)."""
+    removed_any = False
+
+    # Try crontab removal
+    if _has_crontab():
+        existing = _read_crontab()
+        if _CRON_TAG in existing:
+            lines = [l for l in existing.splitlines() if _CRON_TAG not in l]
+            content = "\n".join(lines).strip()
+            if content:
+                content += "\n"
+            else:
+                # Empty crontab — remove entirely
+                subprocess.run(
+                    ["crontab", "-r"], capture_output=True, text=True, timeout=10
+                )
+                removed_any = True
+                # Skip write since we removed
+                content = ""
+            if content:
+                if _write_crontab(content):
+                    removed_any = True
+            elif not removed_any:
+                removed_any = True  # nothing to write, crontab already cleared
+
+    # Try openclaw cron removal
+    try:
+        result = subprocess.run(
+            ["openclaw", "cron", "list", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0 and result.stdout:
+            jobs = json.loads(result.stdout)
+            if isinstance(jobs, list):
+                for job in jobs:
+                    if "SignalRadar" in str(job.get("name", "")):
+                        job_id = job.get("id", "")
+                        if job_id:
+                            subprocess.run(
+                                ["openclaw", "cron", "delete", str(job_id)],
+                                capture_output=True, text=True, timeout=15
+                            )
+                            removed_any = True
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        pass  # openclaw not available, skip
+
+    if removed_any:
+        return True, "Auto-monitoring disabled."
+    return True, "No active auto-monitoring found."
+
+
+def _check_cron_status() -> dict[str, Any]:
+    """Check current cron scheduling status. Returns frozen-contract dict."""
+    status: dict[str, Any] = {
+        "enabled": False,
+        "interval": 0,
+        "driver": "none",
+        "next_run": "unknown",
+        "last_run": "never",
+        "last_run_status": "unknown",
+    }
+
+    # Check last_run from cache
+    last_run_file = _last_run_path()
+    if last_run_file.exists():
+        try:
+            lr = json.loads(last_run_file.read_text(encoding="utf-8"))
+            status["last_run"] = lr.get("ts", "never")
+            status["last_run_status"] = lr.get("status", "unknown")
+        except Exception:
+            pass
+
+    # Check crontab
+    if _has_crontab():
+        existing = _read_crontab()
+        for line in existing.splitlines():
+            if _CRON_TAG in line and not line.strip().startswith("#"):
+                status["enabled"] = True
+                status["driver"] = "crontab"
+                # Parse interval from */N pattern
+                parts = line.strip().split()
+                if parts and parts[0].startswith("*/"):
+                    try:
+                        status["interval"] = int(parts[0][2:])
+                    except ValueError:
+                        pass
+                status["next_run"] = "unknown"
+                return status
+
+    # Check openclaw cron
+    try:
+        result = subprocess.run(
+            ["openclaw", "cron", "list", "--json"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0 and result.stdout:
+            jobs = json.loads(result.stdout)
+            if isinstance(jobs, list):
+                for job in jobs:
+                    if "SignalRadar" in str(job.get("name", "")):
+                        status["enabled"] = True
+                        status["driver"] = "openclaw"
+                        # Parse interval from every field
+                        every = str(job.get("every", ""))
+                        if every.endswith("m"):
+                            try:
+                                status["interval"] = int(every[:-1])
+                            except ValueError:
+                                pass
+                        next_run = job.get("next_run")
+                        status["next_run"] = next_run if next_run else "unknown"
+                        return status
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        pass
+
+    return status
+
+
+def _ensure_auto_monitoring(interval: int = 10, config_override: str = "") -> None:
+    """Check if cron exists; if not, set it up. Idempotent."""
+    cron_status = _check_cron_status()
+    if cron_status["enabled"]:
+        return  # already running, skip
+
+    ok, msg = _setup_cron(interval)
+    print(f"\n{msg}")
+    if ok:
+        print(f"To change frequency: signalradar.py schedule 30")
+        print(f"To disable: signalradar.py schedule disable")
+        # Sync check_interval_minutes to config
+        _save_config_key(config_override, "check_interval_minutes", interval)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +421,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_add(args: argparse.Namespace) -> int:
     url = args.url
+
+    # No URL provided
+    if not url:
+        wl = load_watchlist(_watchlist_path())
+        if not wl.get("entries"):
+            # Empty watchlist + no URL → onboarding
+            return _onboarding(args)
+        else:
+            print("Usage: signalradar.py add <polymarket-event-url>")
+            print("       signalradar.py add  (guided setup, first time only)")
+            return 1
+
     slug = parse_polymarket_url(url)
     if not slug:
         print(f"Error: Cannot parse Polymarket event URL: {url}")
@@ -212,6 +488,11 @@ def cmd_add(args: argparse.Namespace) -> int:
         # Only settled markets but user confirmed above
         active_markets = markets
 
+    # Check if watchlist was empty before this add
+    wl_path = _watchlist_path()
+    wl_before = load_watchlist(wl_path)
+    was_empty = not wl_before.get("entries")
+
     # Build watchlist entries
     category = args.category or "default"
     now = _utc_now()
@@ -227,7 +508,6 @@ def cmd_add(args: argparse.Namespace) -> int:
             "added_at": now,
         })
 
-    wl_path = _watchlist_path()
     added, skipped = add_entries(wl_path, new_entries)
 
     # Record baselines for newly added entries
@@ -262,13 +542,9 @@ def cmd_add(args: argparse.Namespace) -> int:
         for entry in skipped:
             print(f"  {entry['question']}")
 
-    # First-add frequency notice (only if this was the first addition)
-    wl = load_watchlist(wl_path)
-    if added and len(wl.get("entries", [])) == len(added):
-        config = _load_config(args.config)
-        interval = config.get("check_interval_minutes", 10)
-        print(f"\nMonitoring frequency: every {interval} minutes (default).")
-        print("To change: signalradar.py config check_interval_minutes 20")
+    # Auto-monitoring: enable on first add (watchlist was empty)
+    if added and was_empty:
+        _ensure_auto_monitoring(interval=10, config_override=getattr(args, "config", ""))
 
     return 0
 
@@ -334,6 +610,69 @@ def cmd_config(args: argparse.Namespace) -> int:
     print(f"Set {key} = {parsed_value}")
     print(f"Saved to {cfg_path}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_schedule
+# ---------------------------------------------------------------------------
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    action = args.action
+
+    # No argument: show current status
+    if not action:
+        status = _check_cron_status()
+        if args.output == "json":
+            _json_print(status)
+        else:
+            if status["enabled"]:
+                print(f"Auto-monitoring: enabled")
+                print(f"  Interval: every {status['interval']} minutes")
+                print(f"  Driver: {status['driver']}")
+                print(f"  Next run: {status['next_run']}")
+                print(f"  Last run: {status['last_run']}")
+                print(f"  Last status: {status['last_run_status']}")
+            else:
+                print("Auto-monitoring: disabled")
+                if status["last_run"] != "never":
+                    print(f"  Last run: {status['last_run']}")
+                    print(f"  Last status: {status['last_run_status']}")
+                print("\nTo enable: signalradar.py schedule 10")
+        return 0
+
+    # Disable
+    if action == "disable":
+        ok, msg = _remove_cron()
+        print(msg)
+        return 0 if ok else 1
+
+    # Numeric interval
+    try:
+        interval = int(action)
+    except ValueError:
+        print(f"Error: Invalid argument '{action}'. Use a number (minutes) or 'disable'.")
+        return 1
+
+    if interval < 5:
+        print("Minimum interval is 5 minutes (prevents overlapping runs).")
+        return 1
+
+    driver = args.driver
+
+    # Remove existing first (any driver), then set up new
+    _remove_cron()
+
+    ok, msg = _setup_cron(interval, driver=driver)
+    print(msg)
+
+    if ok:
+        # Sync check_interval_minutes to config
+        config_override = getattr(args, "config", "")
+        _save_config_key(config_override, "check_interval_minutes", interval)
+        print(f"To change: signalradar.py schedule {interval}")
+        print(f"To disable: signalradar.py schedule disable")
+
+    return 0 if ok else 1
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +780,22 @@ def cmd_remove(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # cmd_run
 # ---------------------------------------------------------------------------
+
+def _write_last_run(status: str, checked: int, hits_count: int) -> None:
+    """Write cache/last_run.json after each run."""
+    lr_path = _last_run_path()
+    lr_path.parent.mkdir(parents=True, exist_ok=True)
+    lr_data = {
+        "ts": _utc_now(),
+        "status": status,
+        "checked": checked,
+        "hits": hits_count,
+    }
+    lr_path.write_text(
+        json.dumps(lr_data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
 
 def cmd_run(args: argparse.Namespace) -> int:
     wl = load_watchlist(_watchlist_path())
@@ -550,6 +905,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         status = "HIT"
     else:
         status = "NO_REPLY"
+
+    # Write last_run.json (not on dry-run)
+    if not args.dry_run:
+        _write_last_run(status, checked, len(hits))
 
     # Output
     if args.output == "json":
@@ -712,13 +1071,6 @@ def _onboarding(args: argparse.Namespace) -> int:
         print(f"({len(skipped)} already in watchlist, skipped)")
     print("Remove any you don't need with: signalradar.py remove <number>")
 
-    # Frequency notice
-    config = _load_config(args.config)
-    interval = config.get("check_interval_minutes", 10)
-    print(f"\nMonitoring frequency: every {interval} minutes (default).")
-    print("To change: signalradar.py config check_interval_minutes 20")
-    print("Note: higher frequency = more API requests and more frequent alerts.")
-
     print(
         "\nWhat is a baseline?\n"
         "A baseline is the \"last known probability\" SignalRadar records. When probability\n"
@@ -727,6 +1079,10 @@ def _onboarding(args: argparse.Namespace) -> int:
         "  baseline 7% -> probability rises to 15% -> alert sent -> baseline updates to 15%\n"
         "  Next alert requires another 5pp change from 15%."
     )
+
+    # Auto-monitoring: enable after successful onboarding
+    if added:
+        _ensure_auto_monitoring(interval=10, config_override=getattr(args, "config", ""))
 
     return 0
 
@@ -753,7 +1109,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     Moves global flags that appear before the subcommand to after it,
     so argparse subparsers can parse them correctly.
     """
-    commands = {"doctor", "add", "list", "remove", "run", "config"}
+    commands = {"doctor", "add", "list", "remove", "run", "config", "schedule"}
     # Find subcommand position
     cmd_idx = None
     for i, arg in enumerate(argv):
@@ -788,7 +1144,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="SignalRadar v0.5.0 — Polymarket probability monitor"
+        description="SignalRadar v0.5.3 — Polymarket probability monitor"
     )
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -800,7 +1156,7 @@ def main() -> int:
 
     # add
     p_add = sub.add_parser("add", help="Add market(s) by Polymarket URL")
-    p_add.add_argument("url", help="Polymarket event URL")
+    p_add.add_argument("url", nargs="?", default="", help="Polymarket event URL (omit for guided setup)")
     p_add.add_argument("--category", default="", help="Category for the entries")
     p_add.add_argument("--yes", "-y", action="store_true", default=False, help="Skip confirmation")
     p_add.add_argument("--config", default="", help="Path to config JSON")
@@ -821,6 +1177,14 @@ def main() -> int:
     p_cfg.add_argument("value", nargs="?", default=None, help="New value")
     p_cfg.add_argument("--output", choices=["text", "json"], default="text")
     p_cfg.add_argument("--config", default="", help="Path to config JSON")
+
+    # schedule
+    p_sched = sub.add_parser("schedule", help="Manage auto-monitoring schedule")
+    p_sched.add_argument("action", nargs="?", default="", help="Interval in minutes, or 'disable'")
+    p_sched.add_argument("--driver", choices=["crontab", "openclaw"], default="crontab",
+                         help="Scheduling driver (default: crontab)")
+    p_sched.add_argument("--output", choices=["text", "json"], default="text")
+    p_sched.add_argument("--config", default="", help="Path to config JSON")
 
     # run
     p_run = sub.add_parser("run", help="Check all entries for probability changes")
@@ -843,6 +1207,8 @@ def main() -> int:
         return cmd_remove(args)
     elif cmd == "config":
         return cmd_config(args)
+    elif cmd == "schedule":
+        return cmd_schedule(args)
     elif cmd == "run":
         return cmd_run(args)
     else:

@@ -186,6 +186,28 @@ The following config fields are no longer supported:
 | Mode-related fields | Mode concept removed. All entries run together. |
 | Notion-related fields | Notion integration removed. |
 
+## Scheduling (Auto-Monitoring)
+
+After the first successful `add`, SignalRadar automatically enables 10-minute cron monitoring (v0.5.3+). The actual monitoring frequency is managed by the `schedule` command, not by editing config values.
+
+```bash
+signalradar.py schedule              # Show current status (driver, interval, last_run)
+signalradar.py schedule 10           # Set 10-minute interval (default driver: crontab)
+signalradar.py schedule 10 --driver openclaw  # Use openclaw cron instead
+signalradar.py schedule disable      # Disable auto-monitoring completely
+```
+
+The `check_interval_minutes` config key is a display value that gets updated automatically when you use `schedule`. Do not edit it directly to change monitoring frequency — use `schedule` instead.
+
+Minimum interval: 5 minutes (prevents overlapping runs).
+
+### Drivers
+
+| Driver | How it works | Cost |
+|--------|-------------|------|
+| `crontab` (default) | System crontab, runs shell command directly | Zero model cost |
+| `openclaw` | OpenClaw platform cron, `--session isolated` | Has model invocation cost |
+
 ## Notes
 
 - Runtime behavior is controlled by CLI/config; env vars are only used for path overrides.
