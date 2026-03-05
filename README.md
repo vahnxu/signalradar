@@ -1,4 +1,4 @@
-# SignalRadar
+# SignalRadar / 信号雷达
 
 Monitor Polymarket prediction markets for probability changes. Get alerts when thresholds are crossed.
 

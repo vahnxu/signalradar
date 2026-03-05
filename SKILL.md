@@ -33,7 +33,7 @@ metadata:
   version: 0.5.4
 ---
 
-# SignalRadar
+# SignalRadar / 信号雷达
 
 ## Critical Rules / 关键规则
 
