@@ -30,7 +30,7 @@ metadata:
         description: "Override config file path. Defaults to config/signalradar_config.json under workspace root."
         howToGet: "Set to absolute path of your config JSON, e.g. export SIGNALRADAR_CONFIG=/path/to/signalradar_config.json"
   author: vahnxu
-  version: 0.5.4
+  version: 0.5.5
 ---
 
 # SignalRadar / 信号雷达
