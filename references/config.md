@@ -24,6 +24,20 @@
 - Then: env `SIGNALRADAR_CONFIG`
 - Fallback: `<workspace>/config/signalradar_config.json`
 
+## CLI Dotted Keys
+
+The `config` command accepts dotted keys for nested values:
+
+```bash
+signalradar.py config threshold.abs_pp
+signalradar.py config threshold.abs_pp 8.0
+signalradar.py config threshold.per_category_abs_pp.AI 4.0
+signalradar.py config profile.timezone Asia/Shanghai
+```
+
+- Threshold minimum: `0.1` percentage points
+- To change monitoring frequency, use `schedule`, not `config check_interval_minutes`
+
 ## Full Config Shape
 
 ```json
@@ -84,8 +98,8 @@ Monitored entries are stored in `config/watchlist.json` (not in config.json).
       "archived_at": "2026-03-05T10:00:00Z",
       "archive_reason": "user_removed",
       "baseline_history": [
-        {"value": 0.23, "ts": "2026-02-20T08:00:00Z"},
-        {"value": 0.41, "ts": "2026-02-25T12:00:00Z"}
+        {"value": 23.0, "ts": "2026-02-20T08:00:00Z"},
+        {"value": 41.0, "ts": "2026-02-25T12:00:00Z"}
       ],
       "final_result": "No"
     }
@@ -106,6 +120,8 @@ Priority order (highest wins):
 1. Per-entry override: `threshold.per_entry_abs_pp.{entry_id}`
 2. Per-category override: `threshold.per_category_abs_pp.{category}`
 3. Global threshold: `threshold.abs_pp` (default: 5.0)
+
+Minimum allowed threshold: `0.1` percentage points.
 
 Example:
 

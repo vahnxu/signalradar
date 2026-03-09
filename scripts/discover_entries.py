@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import socket
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -271,18 +272,60 @@ def normalize_market(
 # Single market fetch (for run-time checks)
 # ---------------------------------------------------------------------------
 
+def fetch_market_current_result(market_id: str) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    """Fetch current state of a single market by ID with stable error metadata."""
+    try:
+        raw = _api_get(f"/markets/{market_id}")
+        if isinstance(raw, dict):
+            return normalize_market(raw), None
+        return None, {
+            "code": "SR_SOURCE_UNAVAILABLE",
+            "message": "Polymarket API returned an unexpected response for this market.",
+        }
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None, {
+                "code": "SR_SOURCE_UNAVAILABLE",
+                "message": "Polymarket API could not find this market.",
+            }
+        return None, {
+            "code": "SR_SOURCE_UNAVAILABLE",
+            "message": f"Polymarket API returned HTTP {exc.code}.",
+        }
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, socket.timeout):
+            return None, {
+                "code": "SR_TIMEOUT",
+                "message": "Polymarket API timed out while fetching this market.",
+            }
+        return None, {
+            "code": "SR_SOURCE_UNAVAILABLE",
+            "message": "Could not reach Polymarket API.",
+        }
+    except TimeoutError:
+        return None, {
+            "code": "SR_TIMEOUT",
+            "message": "Polymarket API timed out while fetching this market.",
+        }
+    except Exception:
+        return None, {
+            "code": "SR_SOURCE_UNAVAILABLE",
+            "message": "Could not fetch current market data from Polymarket API.",
+        }
+    return None, {
+        "code": "SR_SOURCE_UNAVAILABLE",
+        "message": "Could not fetch current market data from Polymarket API.",
+    }
+
+
 def fetch_market_current(market_id: str) -> dict[str, Any] | None:
     """Fetch current state of a single market by ID.
 
     Returns normalized market dict or None on failure.
     """
-    try:
-        raw = _api_get(f"/markets/{market_id}")
-        if isinstance(raw, dict):
-            return normalize_market(raw)
-    except Exception:
-        pass
-    return None
+    market, _error = fetch_market_current_result(market_id)
+    return market
 
 
 # ---------------------------------------------------------------------------

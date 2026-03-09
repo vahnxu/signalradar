@@ -6,10 +6,14 @@ description: >-
   监控 Polymarket 预测市场概率变化，超过阈值时推送通知。
   Use when user asks to "add a Polymarket market", "monitor Polymarket",
   "check prediction markets", "list my monitors", "remove a monitor",
-  "track market probabilities", or "run market check".
-  Accepts any Polymarket event URL. Do NOT use for stock market analysis,
-  sports betting, or real-time trading signals.
-  接受任意 Polymarket 事件链接。不适用于股市分析、体育博彩或实时交易信号。
+  "track market probabilities", "run market check", "check schedule status",
+  "change threshold", "change check frequency", or "health check".
+  Also use when user says "我的监控", "看看有啥变化", "帮我加一下", "阈值",
+  "自动监控", "定时检查", or sends any polymarket.com URL — even if they
+  don't explicitly say "SignalRadar".
+  Accepts any Polymarket event URL. Do NOT use for stock/crypto trading signals,
+  sports betting, price prediction models, or general financial analysis.
+  不适用于股票/加密货币交易信号、体育博彩、价格预测模型或一般金融分析。
 allowed-tools: "Bash(python3:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
@@ -38,24 +42,93 @@ metadata:
 
 > 信号雷达 — 监控 Polymarket 预测市场概率变化，超过阈值时推送通知。
 
-## Critical Rules / 关键规则
+## 用户意图→命令映射 / Intent Mapping
 
-- **Do NOT auto-add monitoring entries.** User must explicitly provide a Polymarket URL.
-  **禁止自动添加监控条目。** 必须由用户明确提供 Polymarket 链接。
-- **Do NOT manually edit** `cache/`, `config/watchlist.json`, or baseline files. Normal runs automatically write these — that is expected behavior.
-  **禁止手动编辑** `cache/`、`config/watchlist.json` 或基线文件。正常运行会自动写入这些文件，这是预期行为。
-- After first successful onboarding or first `add`, SignalRadar automatically enables 10-minute cron monitoring. This is NOT silent — the CLI explicitly tells the user. Agent should confirm this happened and explain how to change frequency.
-  首次引导或首次 `add` 成功后，SignalRadar 会自动启用 10 分钟 cron 监控。这不是静默操作——CLI 会明确告知用户。Agent 应确认此操作已完成，并说明如何更改频率。
-- When interacting with a human user, Agent must NOT use `--yes` flag. The `--yes` flag is for automated/CI pipelines only (smoke tests, prepublish gates). Let the script's built-in confirmation handle user interaction.
-  与真人用户交互时，Agent 禁止使用 `--yes` 参数。`--yes` 仅用于自动化/CI 流水线（冒烟测试、预发布门禁）。让脚本内置的确认流程处理用户交互。
-- When user asks about current settings, ALWAYS run `signalradar.py config` or read the actual config file first. Do NOT assume or guess config values. If a key is missing, report the DEFAULT value and state it is the default.
-  当用户询问当前设置时，必须先运行 `signalradar.py config` 或读取实际配置文件。禁止假设或猜测配置值。如果某项缺失，报告默认值并说明是默认值。
-- If event has multiple markets (>3), Agent MUST first report the count and explain what they are BEFORE running `add`. Example: "This Bitcoin event has 28 sub-markets (14 upside + 14 downside). Add all 28 or pick specific levels?" Wait for user choice.
-  如果事件包含多个市场（>3 个），Agent 必须先报告数量并解释类型，然后再执行 `add`。示例："这个 Bitcoin 事件有 28 个子市场（14 个看涨 + 14 个看跌）。全部添加还是选择特定价位？"等待用户选择。
-- Use `signalradar.py config [key] [value]` to view or change settings. Use `signalradar.py schedule [N|disable]` for monitoring frequency. Do NOT hand-edit JSON config files.
-  使用 `signalradar.py config [key] [value]` 查看或修改设置。使用 `signalradar.py schedule [N|disable]` 管理监控频率。禁止手动编辑 JSON 配置文件。
-- When user's watchlist is empty and they want to add markets but don't have a URL, suggest `signalradar.py add` without arguments to browse preset events.
-  当用户的监控列表为空且想添加市场但没有链接时，建议执行不带参数的 `signalradar.py add` 来浏览预置事件。
+Agent 收到用户消息后，按此表选择命令。**无匹配时不执行任何命令，正常对话即可。**
+
+| 用户意图（中文常见表达） | English intent | 命令 |
+|------------------------|----------------|------|
+| "看看我监控了啥" / "我的列表" / "在追踪哪些" | "list my monitors" / "what am I tracking" | `list` |
+| "有啥变化吗" / "检查一下" / "跑一下" | "any changes?" / "run a check" | `run` |
+| "帮我加一下 [URL]" / "监控这个链接" | "add this market" / "monitor this" | `add <url>` |
+| "帮我加几个市场" / "想监控但没链接" | "add markets" (no URL) | `add`（无参数，引导式） |
+| "删掉第 N 个" / "不监控这个了" | "remove #N" / "stop monitoring" | `remove <N>` |
+| "阈值改成 X" / "灵敏度调高" | "change threshold" / "more sensitive" | `config threshold.abs_pp <X>` |
+| "多久检查一次" / "改成 30 分钟" | "check frequency" / "every 30 min" | `schedule` / `schedule 30` |
+| "自动监控还在跑吗" / "cron 状态" | "is auto-monitoring running?" | `schedule`（查看状态） |
+| "现在设置是什么" / "阈值多少" | "what are current settings?" | `config`（必须查实际值） |
+| "健康检查" / "能用吗" | "health check" / "is it working?" | `doctor --output json` |
+| **"好的" / "没事" / "OK" / "知道了"** | **casual chat** | **不执行任何命令** |
+| **"那个 GPT 概率多少了"** | **"what's the probability of X?"** | `show <number|keyword>` |
+
+## 关键规则 / Critical Rules
+
+**CR-01 多市场必须先报告数量**
+如果事件包含多个市场（>3 个），CLI 会先强制打印市场数量、类型摘要和市场列表，再等待用户确认；`--yes` 不能跳过这一步。Agent 仍然必须先向用户解释数量和类型，再执行 `add`。
+If event has multiple markets (>3), the CLI now force-prints count, type summary, and market list before waiting for confirmation; `--yes` cannot skip this. Agent must still explain the count and types before running `add`.
+
+**CR-02 禁止自动添加市场**
+必须由用户明确提供 Polymarket 链接或从预置列表选择，Agent 禁止自行添加。
+User must explicitly provide a Polymarket URL or choose from presets. Do NOT auto-add.
+
+**CR-03 Agent 禁止手动编辑数据文件**
+Agent 禁止使用 Write/Edit 工具编辑 `cache/`、`config/watchlist.json` 或基线文件。必须通过 CLI 命令操作。正常运行会自动写入这些文件，这是预期行为。（注意：用户本人可以手动编辑 watchlist.json，系统兼容手动编辑。此规则仅限制 Agent。）
+Agent must NOT edit `cache/`, `config/watchlist.json`, or baseline files using Write/Edit tools. Use CLI commands only. Normal runs automatically write these — that is expected behavior. (Note: the human user may hand-edit watchlist.json — the system tolerates it. This rule only restricts the Agent.)
+
+**CR-04 人机交互禁用 --yes**
+与真人用户交互时，Agent 禁止使用 `--yes` 参数。`--yes` 仅用于自动化/CI 流水线（冒烟测试、cron 定时任务、预发布门禁）。让脚本内置的确认流程处理用户交互。
+When interacting with a human user, Agent must NOT use `--yes` flag. The `--yes` flag is for automated/CI pipelines only.
+
+**CR-05 查设置必须读实际值**
+当用户询问当前设置时，必须先运行 `signalradar.py config` 或读取实际配置文件。禁止假设或猜测配置值。如果某项缺失，报告默认值并说明"这是默认值"。
+When user asks about current settings, ALWAYS run `signalradar.py config` first. Do NOT guess.
+
+**CR-06 首次 add 后自动启用 cron**
+首次引导或首次 `add` 成功后，SignalRadar 会自动启用 10 分钟 cron 监控。CLI 会明确告知用户。Agent 应确认此操作已完成，并说明如何用 `schedule` 命令更改频率。
+After first successful `add`, cron auto-enables. Agent should confirm and explain how to change frequency.
+
+**CR-07 用 CLI 管理设置和频率**
+使用 `signalradar.py config [key] [value]` 查看或修改设置（阈值、推送通道等）。使用 `signalradar.py schedule [N|disable]` 管理监控频率。禁止手动编辑 JSON 配置文件。
+Use CLI commands for settings and schedule. Do NOT hand-edit JSON config files.
+
+**CR-08 空列表引导浏览**
+当用户的监控列表为空且想添加市场但没有链接时，建议执行不带参数的 `signalradar.py add` 来浏览预置事件。
+When watchlist is empty and user has no URL, suggest `signalradar.py add` (no args) to browse presets.
+
+## 已知 AI 错误（禁止重犯） / Known AI Mistakes
+
+以下错误在 GCP 实测中已实际发生。Agent 必须避免。
+These mistakes actually occurred in production. Agent must avoid them.
+
+**错误 1：直接添加 28 个市场，未先报告数量**
+- 错误做法：用户发比特币链接，Agent 直接执行 `add` 添加 28 个市场
+- 正确做法：先说"这个 Bitcoin 事件有 28 个子市场（14 个看涨 + 14 个看跌）。全部添加还是选择特定价位？"等用户回复后再执行
+- WRONG: User sends Bitcoin URL → Agent runs `add` and adds 28 markets silently
+- CORRECT: Report "This event has 28 sub-markets (14 upside + 14 downside). Add all or pick?" → wait for reply
+
+**错误 2：用户说"好的"，Agent 触发 run 并裸发 NO_REPLY**
+- 错误做法：用户说"好的" → Agent 执行 `signalradar.py run` → 回复 "NO_REPLY"
+- 正确做法："好的"是日常确认，不是检查请求。Agent 正常回复即可，不执行任何命令
+- WRONG: User says "好的" → Agent runs `signalradar.py run` → replies "NO_REPLY"
+- CORRECT: "好的" is casual acknowledgment. Reply normally without running any command.
+
+**错误 3：人机对话中使用 --yes 参数**
+- 错误做法：`python3 scripts/signalradar.py add <url> --yes`（跳过确认）
+- 正确做法：`python3 scripts/signalradar.py add <url>`（让脚本内置确认流程处理；>3 市场时 CLI 会强制预览）
+- WRONG: `signalradar.py add <url> --yes` (skips confirmation in human chat)
+- CORRECT: `signalradar.py add <url>` (let built-in confirmation handle it; CLI force-previews large batches)
+
+**错误 4：用 Write/Edit 工具直接编辑 watchlist.json**
+- 错误做法：用 Write 工具修改 `config/watchlist.json` 的内容
+- 正确做法：使用 `signalradar.py add/remove/config` CLI 命令操作
+- WRONG: Edit `config/watchlist.json` with Write/Edit tools
+- CORRECT: Use `signalradar.py add`, `remove`, `config` CLI commands
+
+**错误 5：凭记忆回答配置值，不查实际文件**
+- 错误做法：用户问"阈值多少？" → Agent 回答"默认是 5pp"（没有执行 config 命令）
+- 正确做法：先运行 `signalradar.py config threshold.abs_pp`，再用实际返回值回答
+- WRONG: "The default threshold is 5pp" (without checking)
+- CORRECT: Run `signalradar.py config threshold.abs_pp` first, then answer with the actual value
 
 ## Quick Start / 快速开始
 
@@ -96,8 +169,8 @@ Flow: parse URL → query Polymarket API → show market question + current prob
 
 流程：解析链接 → 查询 Polymarket API → 显示市场问题 + 当前概率 → 用户确认 → 记录基线。
 
-- If the event has multiple markets (e.g., different date brackets), all are added by default. User can refine afterward.
-  如果事件包含多个市场（如不同日期区间），默认全部添加。用户可以之后调整。
+- If the event has multiple markets (e.g., different date brackets), the CLI shows all markets with their current probabilities before adding. For large events (>3 markets), it also shows a type summary and forces interactive confirmation even if `--yes` was passed.
+  如果事件包含多个市场（如不同日期区间），CLI 会先展示所有市场及当前概率。大事件（>3 个市场）还会显示类型摘要，并且即使传了 `--yes` 也会强制要求交互确认。
 - If some markets from the event are already monitored, only new ones are added.
   如果事件中部分市场已在监控，只添加新的。
 - If the market is settled/expired, a warning is shown but the user can still add it.
@@ -119,6 +192,16 @@ Shows all entries grouped by category with global sequential numbering. Each ent
 
 `--archived` shows previously removed entries (preserved for export).
 `--archived` 显示之前移除的条目（保留用于导出）。
+
+### Show one monitored market / 查看单个监控市场
+
+```bash
+python3 scripts/signalradar.py show <number-or-keyword> [--output json]
+```
+
+Looks up one or more monitored markets by list number or keyword, fetches current probability, and returns a read-only snapshot without updating baselines.
+
+按列表编号或关键词查找一个或多个已监控市场，获取当前概率，并返回只读快照，不更新基线。
 
 ### Remove a monitor / 移除监控
 
@@ -282,8 +365,8 @@ Frequency is controlled by `digest.frequency` in config.
 
 - `--dry-run` fetches and evaluates without writing any state.
   `--dry-run` 只获取和评估，不写入任何状态。
-- Users may hand-edit `config/watchlist.json` (e.g., to change categories). The system tolerates manual edits.
-  用户可以手动编辑 `config/watchlist.json`（如更改分类）。系统兼容手动编辑。
+- The human user (not Agent) may hand-edit `config/watchlist.json` (e.g., to change categories). The system tolerates manual edits. Agent must use CLI commands only — see CR-03.
+  用户本人（非 Agent）可以手动编辑 `config/watchlist.json`（如更改分类）。系统兼容手动编辑。Agent 必须使用 CLI 命令——见 CR-03。
 - No files outside the skill directory are modified.
   不会修改 skill 目录外的任何文件。
 
@@ -327,38 +410,65 @@ These are independent: a 5pp threshold with 10-minute frequency checks every 10 
 | `SR_CONFIG_CONFLICT` | Contradictory config values / 配置值冲突 | Review config for duplicate keys / 检查配置是否有重复键 |
 | `SR_PERMISSION_DENIED` | Insufficient permissions / 权限不足 | Check file permissions on config/ and cache/ / 检查文件权限 |
 
-## AI Agent Instructions (Complete) / AI Agent 指令（完整版）
+## AI Agent 指令（完整版） / AI Agent Instructions
 
-### Presenting results / 结果展示
+### 默认行为 / Agent Default Behavior
 
-- **HIT**: Always show market question, probability change (old% → new%), magnitude in pp, and "baseline updated to X%". Group by event when multiple markets from the same event trigger.
-  **HIT**：始终显示市场问题、概率变化（旧% → 新%）、变化幅度（pp），以及"基线已更新至 X%"。同一事件多个市场触发时合并展示。
-- **BASELINE**: Tell the user "First run — baselines recorded for N markets. Run again later to detect changes." Do not present BASELINE as a problem.
-  **BASELINE**：告诉用户"首次运行——已为 N 个市场记录基线。稍后再次运行以检测变化。"不要将 BASELINE 呈现为问题。
-- **NO_REPLY**: Briefly confirm "No markets crossed the threshold." Do not dump raw JSON.
-  **NO_REPLY**：简要确认"没有市场超过阈值。"不要输出原始 JSON。
-- **Empty watchlist**: Guide the user to add entries: "No entries being monitored. Add a market with: `signalradar.py add <polymarket-url>`"
-  **空监控列表**：引导用户添加条目："当前没有监控条目。使用 `signalradar.py add <polymarket-url>` 添加市场。"
+Agent 在执行 SignalRadar 命令时，应遵循以下默认行为：
 
-### Prohibited actions / 禁止操作
+**命令输出处理**：Agent 应使用 `--output json` 获取结构化数据，然后自己翻译为用户友好的自然语言消息发送给用户。禁止将原始 JSON 或状态码直接发给用户。
+Use `--output json` to get structured data, then translate it to user-friendly natural language. Never send raw JSON or status codes to the user.
 
-- Do not auto-discover or suggest markets to add. Wait for user to provide URLs.
-  禁止自动发现或建议添加市场。等待用户提供链接。
-- Do not create cron jobs outside of the `schedule` command flow.
-  禁止在 `schedule` 命令流程外创建 cron 任务。
-- Do not manually edit `cache/`, `config/watchlist.json`, or baseline files.
-  禁止手动编辑 `cache/`、`config/watchlist.json` 或基线文件。
-- Do not assume a mode — there are no modes. Just run `signalradar.py run`.
-  不要假设有模式——没有模式概念。直接运行 `signalradar.py run`。
-- Do not mention or attempt to use Notion integration (removed in v0.5.0).
-  禁止提及或尝试使用 Notion 集成（已在 v0.5.0 中移除）。
+**run vs run --dry-run 选择**：
+- 用户明确要求检查（"检查一下"/"跑一下"）→ 使用 `run`（会更新基线）
+- Agent 想展示当前状态但不确定用户是否想更新基线 → 使用 `run --dry-run`（只读不写）
+- User explicitly asks to check → `run` (updates baselines)
+- Agent wants to show status but unsure about updating → `run --dry-run` (read-only)
 
-### Language handling / 语言处理
+**网络错误处理**：收到 `SR_TIMEOUT` 或 `SR_SOURCE_UNAVAILABLE` 时，Agent 应告知用户"Polymarket API 暂时无法访问，请稍后再试"，不要自动重试。
+On `SR_TIMEOUT` or `SR_SOURCE_UNAVAILABLE`, tell user "Polymarket API temporarily unavailable, please try later." Do not auto-retry.
 
-- System messages (prompts, confirmations, status text) follow platform language or `profile.language` setting.
-  系统消息（提示、确认、状态文本）跟随平台语言或 `profile.language` 设置。
-- Market questions are always displayed in their original English text from Polymarket API. Do not translate market questions.
-  市场问题始终以 Polymarket API 返回的原始英文显示。不要翻译市场问题。
+**已结算市场处理**：添加已结算/过期的市场时，Agent 应主动告知用户"这个市场已结算，添加后不会产生新的警报。确定要添加吗？"让用户决定。
+When adding settled/expired markets, proactively tell user: "This market is settled. Adding it won't produce new alerts. Still add?" Let user decide.
+
+**单市场查询优先用 `show`**：如果用户问"那个 GPT 概率多少了"，优先运行 `show <关键词或编号>`。只有在用户明确要"顺便检查全部市场"时才用 `run`。
+For single-market lookups, prefer `show <keyword-or-number>`. Use `run` only when the user wants a full check of all monitored markets.
+
+### 结果展示 / Presenting Results
+
+禁止将原始状态码（NO_REPLY、HIT、BASELINE、SILENT、ERROR）直接发送给用户。必须翻译为自然语言。
+NEVER output raw status codes directly to user. Always translate to natural language.
+
+- **HIT**：始终显示市场问题、概率变化（旧% → 新%）、变化幅度（pp），以及"基线已更新至 X%"。同一事件多个市场触发时合并展示。
+  Always show market question, probability change (old% → new%), magnitude in pp, and "baseline updated to X%". Group by event when multiple markets trigger.
+- **BASELINE**：告诉用户"首次运行——已为 N 个市场记录基线。稍后再次运行以检测变化。"不要将 BASELINE 呈现为问题。
+  Tell user: "First run — baselines recorded for N markets. Run again later to detect changes."
+- **NO_REPLY**：简要确认"已检查所有市场，没有超过阈值的变化。"
+  Briefly confirm: "All markets checked. No changes exceeded the threshold."
+- **空监控列表**：引导用户添加市场："当前没有监控市场。发一个 Polymarket 链接给我，或者说'帮我加几个'浏览预置事件。"
+  Guide user: "No markets monitored. Send me a Polymarket URL, or say 'add some' to browse presets."
+
+### 禁止操作 / Prohibited Actions
+
+- 禁止自动发现或建议添加市场。等待用户提供链接。
+  Do not auto-discover or suggest markets to add. Wait for user.
+- 禁止在 `schedule` 命令流程外创建 cron 任务。
+  Do not create cron jobs outside of `schedule` command.
+- Agent 禁止手动编辑 `cache/`、`config/watchlist.json` 或基线文件（见 CR-03）。
+  Agent must not manually edit data files (see CR-03).
+- 不要假设有模式——没有模式概念。直接运行 `signalradar.py run`。
+  No modes exist. Just run `signalradar.py run`.
+- 禁止提及或尝试使用 Notion 集成（已在 v0.5.0 中移除）。
+  Do not mention Notion integration (removed in v0.5.0).
+- 用户日常对话（"好的"/"没事"/"OK"/"知道了"）不是命令，禁止触发任何 signalradar 操作。
+  Casual chat ("好的"/"OK"/"没事") is NOT a command. Do NOT trigger any signalradar operation.
+
+### 语言处理 / Language Handling
+
+- 系统消息（提示、确认、状态文本）跟随平台语言或 `profile.language` 设置。
+  System messages follow platform language or `profile.language` setting.
+- 市场问题始终以 Polymarket API 返回的原始英文显示。不要翻译市场问题。
+  Market questions always displayed in original English from API. Do not translate.
 
 ## References / 参考
 

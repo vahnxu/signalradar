@@ -52,6 +52,22 @@ Default trigger:
 
 - `HIT` when `abs_pp >= threshold.abs_pp`
 
+## RunResult Envelope
+
+Frozen top-level fields:
+
+- `status`
+- `request_id`
+- `ts`
+- `hits`
+- `errors`
+
+Optional extension fields:
+
+- `observations` - per-market evaluation rows for agent-side filtering and single-market lookups
+- `checked_count`
+- `settled_count`
+
 ## IntentSpec
 
 Required fields:
@@ -105,4 +121,3 @@ Allowed `error_code` values:
 - `SR_ROUTE_FAILURE`
 - `SR_CONFIG_CONFLICT`
 - `SR_PERMISSION_DENIED`
-

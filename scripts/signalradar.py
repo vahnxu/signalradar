@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SignalRadar v0.5.3 unified CLI entrypoint.
 
-Commands: doctor, add, list, remove, run, config, schedule
+Commands: doctor, add, list, show, remove, run, config, schedule
 Single source of truth: config/watchlist.json
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - Python 3.9+ should have zoneinfo
+    ZoneInfo = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -34,15 +40,18 @@ from config_utils import (
     archive_entry,
     deep_merge,
     get_entry_by_number,
+    get_nested_value,
     load_json_config,
     load_watchlist,
+    save_json_config,
     save_watchlist,
+    set_nested_value,
 )
 from decide_threshold import check_entry, safe_name
 from discover_entries import (
     ONBOARDING_URLS,
     extract_probability,
-    fetch_market_current,
+    fetch_market_current_result,
     is_settled,
     normalize_market,
     parse_polymarket_url,
@@ -93,12 +102,189 @@ def _save_config_key(override: str, key: str, value: Any) -> None:
     """Write a single key to the user config file."""
     cfg_path = _config_path(override)
     user_cfg = load_json_config(cfg_path)
-    user_cfg[key] = value
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(
-        json.dumps(user_cfg, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    set_nested_value(user_cfg, key, value)
+    save_json_config(cfg_path, user_cfg)
+
+
+def _is_dynamic_config_key(key: str) -> bool:
+    dynamic_prefixes = (
+        "threshold.per_category_abs_pp.",
+        "threshold.per_entry_abs_pp.",
+        "delivery.primary.",
     )
+    return any(key.startswith(prefix) for prefix in dynamic_prefixes)
+
+
+def _config_key_exists(key: str, merged: dict[str, Any]) -> bool:
+    found, _value = get_nested_value(merged, key)
+    return found or _is_dynamic_config_key(key)
+
+
+def _format_user_time(value: str, config: dict[str, Any]) -> str:
+    if value in ("", "never", "unknown"):
+        return value
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if ZoneInfo is None:
+        return value
+    timezone_name = str(config.get("profile", {}).get("timezone", "UTC") or "UTC")
+    try:
+        local_dt = dt.astimezone(ZoneInfo(timezone_name))
+    except Exception:
+        return value
+    return f"{local_dt.strftime('%Y-%m-%d %H:%M:%S')} {timezone_name}"
+
+
+def _parse_cli_value(raw_value: str) -> Any:
+    lowered = raw_value.strip().lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        return int(raw_value)
+    except ValueError:
+        try:
+            return float(raw_value)
+        except ValueError:
+            return raw_value
+
+
+def _validate_config_value(key: str, value: Any) -> str | None:
+    if key == "threshold.abs_pp" or key.startswith("threshold.per_category_abs_pp.") or key.startswith("threshold.per_entry_abs_pp."):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return "Threshold must be a number."
+        if numeric < 0.1:
+            return "Minimum threshold is 0.1 percentage points."
+    if key == "profile.timezone" and ZoneInfo is not None:
+        try:
+            ZoneInfo(str(value))
+        except Exception:
+            return f"Unknown timezone: {value}"
+    return None
+
+
+def _run_error(entry_id: str, code: str, message: str) -> dict[str, Any]:
+    return {
+        "entry_id": entry_id,
+        "code": code,
+        "message": message,
+        "error": message,
+    }
+
+
+def _build_observation(
+    entry: dict[str, Any],
+    *,
+    state: str,
+    decision: str,
+    threshold: float | None = None,
+    current_market: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "entry_id": entry.get("entry_id", ""),
+        "question": entry.get("question", ""),
+        "category": entry.get("category", "default"),
+        "state": state,
+        "decision": decision,
+        "threshold_abs_pp": threshold,
+        "url": entry.get("url", ""),
+        "end_date": entry.get("end_date", ""),
+    }
+    if current_market is not None:
+        observation["current"] = current_market.get("probability")
+        observation["market_status"] = current_market.get("status", "unknown")
+    if result is not None:
+        observation["baseline"] = result.get("baseline")
+        observation["abs_pp"] = result.get("abs_pp")
+        if result.get("event") is not None:
+            observation["reason"] = result["event"].get("reason", "")
+    if error is not None:
+        observation["error_code"] = error.get("code", "SR_SOURCE_UNAVAILABLE")
+        observation["error_message"] = error.get("message", "Unknown error")
+    return observation
+
+
+def _find_entries_for_show(data: dict[str, Any], target: str) -> list[dict[str, Any]]:
+    """Resolve show target by list number or case-insensitive text search."""
+    entries = data.get("entries", [])
+    if target.isdigit():
+        entry = get_entry_by_number(data, int(target))
+        return [entry] if entry is not None else []
+
+    needle = target.strip().lower()
+    matches: list[dict[str, Any]] = []
+    for entry in entries:
+        haystacks = [
+            str(entry.get("question", "")).lower(),
+            str(entry.get("slug", "")).lower(),
+            str(entry.get("entry_id", "")).lower(),
+            str(entry.get("category", "")).lower(),
+        ]
+        if any(needle in hay for hay in haystacks):
+            matches.append(entry)
+    return matches
+
+
+def _classify_market_type(question: str) -> str:
+    text = question.strip().lower()
+    downside_patterns = (
+        r"\bbelow\b",
+        r"\bunder\b",
+        r"\bless than\b",
+        r"\bdrop below\b",
+        r"\bfall below\b",
+        r"\bfall to\b",
+        r"\bat most\b",
+    )
+    upside_patterns = (
+        r"\babove\b",
+        r"\bover\b",
+        r"\bgreater than\b",
+        r"\bexceed\b",
+        r"\breach\b",
+        r"\bhit\b",
+        r"\bat least\b",
+    )
+    if any(re.search(pattern, text) for pattern in downside_patterns):
+        return "downside"
+    if any(re.search(pattern, text) for pattern in upside_patterns):
+        return "upside"
+    return "other"
+
+
+def _summarize_market_types(markets: list[dict[str, Any]]) -> str:
+    counts = {"upside": 0, "downside": 0, "other": 0}
+    for market in markets:
+        counts[_classify_market_type(str(market.get("question", "")))] += 1
+    parts: list[str] = []
+    if counts["upside"]:
+        parts.append(f"{counts['upside']} upside")
+    if counts["downside"]:
+        parts.append(f"{counts['downside']} downside")
+    if counts["other"]:
+        parts.append(f"{counts['other']} other")
+    return ", ".join(parts) if parts else "no active markets"
+
+
+def _print_market_preview(event_title: str, active_markets: list[dict[str, Any]], settled_markets: list[dict[str, Any]]) -> None:
+    print(f"\n{event_title}")
+    print(f"Active markets: {len(active_markets)}")
+    if settled_markets:
+        print(f"Settled markets skipped: {len(settled_markets)}")
+    print(f"Type summary: {_summarize_market_types(active_markets)}")
+    print("Markets to add:")
+    for idx, market in enumerate(active_markets, 1):
+        probability = market.get("probability")
+        probability_text = f"{probability:.0f}%" if isinstance(probability, (int, float)) else "N/A"
+        market_type = _classify_market_type(str(market.get("question", "")))
+        print(f"  {idx}. [{market_type}] {market.get('question', '?')}  {probability_text}")
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +649,20 @@ def cmd_add(args: argparse.Namespace) -> int:
                 print("Cancelled.")
                 return 0
 
-    # Multi-market event: report count first, then confirm
-    if len(active_markets) > 1:
-        print(f"\n{event_title} — {len(active_markets)} markets found.", end="")
-        if settled_markets:
-            print(f" ({len(settled_markets)} settled, skipped.)", end="")
-        print()
-
+    # Multi-market events: always preview before write. Large batches require
+    # interactive confirmation even if --yes was passed.
+    if len(active_markets) > 3:
+        _print_market_preview(event_title, active_markets, settled_markets)
+        if args.yes:
+            print("\nError: bulk add (>3 markets) requires interactive confirmation.")
+            print("Re-run without --yes after reviewing the market preview above.")
+            return 1
+        answer = input(f"Confirm adding all {len(active_markets)} markets? (Y/n): ").strip().lower()
+        if answer in ("n", "no"):
+            print("Cancelled.")
+            return 0
+    elif len(active_markets) > 1:
+        _print_market_preview(event_title, active_markets, settled_markets)
         if not args.yes:
             answer = input(f"Add all {len(active_markets)} markets? (Y/n): ").strip().lower()
             if answer in ("n", "no"):
@@ -556,10 +749,10 @@ def cmd_add(args: argparse.Namespace) -> int:
 def cmd_config(args: argparse.Namespace) -> int:
     cfg_path = _config_path(args.config)
     user_cfg = load_json_config(cfg_path)
+    merged = deep_merge(DEFAULT_CONFIG, user_cfg)
 
     # No key specified: show current config
     if not args.key:
-        merged = deep_merge(DEFAULT_CONFIG, user_cfg)
         if args.output == "json":
             _json_print(merged)
         else:
@@ -578,37 +771,33 @@ def cmd_config(args: argparse.Namespace) -> int:
 
     # No value specified: show current value for that key
     if args.value is None:
-        merged = deep_merge(DEFAULT_CONFIG, user_cfg)
-        if key in merged:
-            print(f"{key}: {merged[key]}")
-        else:
+        found, value = get_nested_value(merged, key)
+        if not found:
             print(f"Unknown key: {key}")
             return 1
+        if isinstance(value, (dict, list)):
+            print(json.dumps(value, ensure_ascii=False, indent=2))
+        else:
+            print(f"{key}: {value}")
         return 0
 
-    # Set value
-    raw_value = args.value
-    # Auto-detect type: int, float, or string
-    parsed_value: Any
-    try:
-        parsed_value = int(raw_value)
-    except ValueError:
-        try:
-            parsed_value = float(raw_value)
-        except ValueError:
-            parsed_value = raw_value
+    if not _config_key_exists(key, merged):
+        print(f"Unknown key: {key}")
+        return 1
 
-    user_cfg[key] = parsed_value
+    parsed_value = _parse_cli_value(args.value)
+    validation_error = _validate_config_value(key, parsed_value)
+    if validation_error:
+        print(f"Error: {validation_error}")
+        return 1
 
-    # Write config (atomic)
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(
-        json.dumps(user_cfg, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    set_nested_value(user_cfg, key, parsed_value)
+    save_json_config(cfg_path, user_cfg)
 
     print(f"Set {key} = {parsed_value}")
     print(f"Saved to {cfg_path}")
+    if key == "check_interval_minutes":
+        print("Note: this updates the display value only. Use 'signalradar.py schedule N' to change actual monitoring frequency.")
     return 0
 
 
@@ -618,6 +807,7 @@ def cmd_config(args: argparse.Namespace) -> int:
 
 def cmd_schedule(args: argparse.Namespace) -> int:
     action = args.action
+    config = _load_config(getattr(args, "config", ""))
 
     # No argument: show current status
     if not action:
@@ -629,13 +819,13 @@ def cmd_schedule(args: argparse.Namespace) -> int:
                 print(f"Auto-monitoring: enabled")
                 print(f"  Interval: every {status['interval']} minutes")
                 print(f"  Driver: {status['driver']}")
-                print(f"  Next run: {status['next_run']}")
-                print(f"  Last run: {status['last_run']}")
+                print(f"  Next run: {_format_user_time(status['next_run'], config)}")
+                print(f"  Last run: {_format_user_time(status['last_run'], config)}")
                 print(f"  Last status: {status['last_run_status']}")
             else:
                 print("Auto-monitoring: disabled")
                 if status["last_run"] != "never":
-                    print(f"  Last run: {status['last_run']}")
+                    print(f"  Last run: {_format_user_time(status['last_run'], config)}")
                     print(f"  Last status: {status['last_run_status']}")
                 print("\nTo enable: signalradar.py schedule 10")
         return 0
@@ -726,6 +916,121 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cmd_show
+# ---------------------------------------------------------------------------
+
+def cmd_show(args: argparse.Namespace) -> int:
+    wl = load_watchlist(_watchlist_path())
+    entries = wl.get("entries", [])
+
+    if not entries:
+        if args.output == "json":
+            _json_print({
+                "status": "NO_REPLY",
+                "request_id": str(uuid.uuid4()),
+                "ts": _utc_now(),
+                "matches": [],
+                "errors": [],
+                "message": "Watchlist is empty",
+            })
+        else:
+            print("No monitored markets yet. Add one with: signalradar.py add <url>")
+        return 0
+
+    matches = _find_entries_for_show(wl, args.target)
+    if not matches:
+        if args.output == "json":
+            _json_print({
+                "status": "NO_REPLY",
+                "request_id": str(uuid.uuid4()),
+                "ts": _utc_now(),
+                "matches": [],
+                "errors": [],
+                "message": f"No monitored market matched '{args.target}'",
+            })
+        else:
+            print(f"No monitored market matched '{args.target}'.")
+            print("Tip: use a list number from 'signalradar.py list' or a keyword from the market question.")
+        return 1
+
+    request_id = str(uuid.uuid4())
+    run_ts = _utc_now()
+    config = _load_config(getattr(args, "config", ""))
+    payload_matches: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    for entry in matches:
+        entry_id = str(entry.get("entry_id", ""))
+        market_id = entry_id.split(":")[1] if ":" in entry_id else ""
+        if not market_id:
+            errors.append(_run_error(entry_id, "SR_VALIDATION_ERROR", "Entry ID format is invalid."))
+            continue
+
+        current_market, fetch_error = fetch_market_current_result(market_id)
+        if current_market is None:
+            if is_settled(entry):
+                payload_matches.append(
+                    _build_observation(
+                        entry,
+                        state="settled",
+                        decision="SETTLED",
+                    )
+                )
+                continue
+            errors.append(
+                _run_error(
+                    entry_id,
+                    fetch_error.get("code", "SR_SOURCE_UNAVAILABLE") if fetch_error else "SR_SOURCE_UNAVAILABLE",
+                    fetch_error.get("message", "Could not fetch current market data from Polymarket API.") if fetch_error else "Could not fetch current market data from Polymarket API.",
+                )
+            )
+            continue
+
+        payload_matches.append(
+            _build_observation(
+                entry,
+                state="settled" if is_settled(current_market) else "checked",
+                decision="SETTLED" if is_settled(current_market) else "SNAPSHOT",
+                current_market=current_market,
+            )
+        )
+
+    status = "ERROR" if errors and not payload_matches else "OK"
+    if args.output == "json":
+        _json_print({
+            "status": status,
+            "request_id": request_id,
+            "ts": run_ts,
+            "matches": payload_matches,
+            "errors": errors,
+        })
+        return 0 if status != "ERROR" else 1
+
+    print(f"Matched {len(payload_matches)} monitored market(s):\n")
+    for item in payload_matches:
+        print(f"  {item.get('question', item.get('entry_id', '?'))}")
+        if item.get("state") == "settled":
+            print("    Market appears settled. No new alerts will fire.")
+        else:
+            print(f"    Current probability: {item.get('current')}%")
+        if item.get("category"):
+            print(f"    Category: {item.get('category')}")
+        if item.get("url"):
+            print(f"    URL: {item.get('url')}")
+        print()
+
+    if errors:
+        print(f"Could not fetch {len(errors)} matched market(s):")
+        for error in errors:
+            print(f"  {error.get('entry_id', 'unknown')}: {error.get('message', 'Unknown error')} ({error.get('code', 'SR_SOURCE_UNAVAILABLE')})")
+
+    if payload_matches:
+        print(f"Snapshot time: {_format_user_time(run_ts, config)}")
+
+    return 0 if status != "ERROR" else 1
+
+
+# ---------------------------------------------------------------------------
 # cmd_remove
 # ---------------------------------------------------------------------------
 
@@ -813,6 +1118,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     "ts": _utc_now(),
                     "hits": [],
                     "errors": [],
+                    "observations": [],
                     "message": "Watchlist is empty",
                 })
             else:
@@ -835,6 +1141,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     run_ts = _utc_now()
     hits: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
     settled_entries: list[dict[str, Any]] = []
     checked = 0
 
@@ -846,26 +1153,77 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Fetch current market state
         market_id = entry_id.split(":")[1] if ":" in entry_id else ""
         if not market_id:
-            errors.append({"entry_id": entry_id, "error": "invalid entry_id format"})
+            err = _run_error(entry_id, "SR_VALIDATION_ERROR", "Entry ID format is invalid.")
+            errors.append(err)
+            observations.append(
+                _build_observation(
+                    entry,
+                    state="error",
+                    decision="ERROR",
+                    error=err,
+                )
+            )
             continue
 
-        current_market = fetch_market_current(market_id)
+        current_market, fetch_error = fetch_market_current_result(market_id)
         if current_market is None:
             # API failure — check end_date as fallback for settled
             if is_settled(entry):
                 settled_entries.append(entry)
+                observations.append(
+                    _build_observation(
+                        entry,
+                        state="settled",
+                        decision="SETTLED",
+                    )
+                )
                 continue
-            errors.append({"entry_id": entry_id, "error": "API fetch failed"})
+            err = _run_error(
+                entry_id,
+                fetch_error.get("code", "SR_SOURCE_UNAVAILABLE") if fetch_error else "SR_SOURCE_UNAVAILABLE",
+                fetch_error.get("message", "Could not fetch current market data from Polymarket API.") if fetch_error else "Could not fetch current market data from Polymarket API.",
+            )
+            errors.append(err)
+            observations.append(
+                _build_observation(
+                    entry,
+                    state="error",
+                    decision="ERROR",
+                    error=err,
+                )
+            )
             continue
 
         # Settled detection: API status priority
         if is_settled(current_market):
             settled_entries.append(entry)
+            observations.append(
+                _build_observation(
+                    entry,
+                    state="settled",
+                    decision="SETTLED",
+                    current_market=current_market,
+                )
+            )
             continue
 
         current_prob = current_market.get("probability")
         if current_prob is None:
-            errors.append({"entry_id": entry_id, "error": "no probability data"})
+            err = _run_error(
+                entry_id,
+                "SR_VALIDATION_ERROR",
+                "Polymarket API returned market data without a probability value.",
+            )
+            errors.append(err)
+            observations.append(
+                _build_observation(
+                    entry,
+                    state="error",
+                    decision="ERROR",
+                    current_market=current_market,
+                    error=err,
+                )
+            )
             continue
 
         # Resolve threshold: per_entry > per_category > default
@@ -891,6 +1249,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             audit_log_path=audit_log,
         )
         checked += 1
+        observations.append(
+            _build_observation(
+                entry,
+                state="checked",
+                decision=result["decision"],
+                threshold=threshold,
+                current_market=current_market,
+                result=result,
+            )
+        )
 
         if result["decision"] == "HIT" and result["event"] is not None:
             hits.append(result["event"])
@@ -920,26 +1288,29 @@ def cmd_run(args: argparse.Namespace) -> int:
             "errors": errors,
             "checked_count": checked,
             "settled_count": len(settled_entries),
+            "observations": observations,
         }
         _json_print(payload)
     else:
         if hits:
-            print(f"HIT — {len(hits)} alert(s):\n")
+            print(f"Detected {len(hits)} market change(s) above your threshold:\n")
             for h in hits:
                 print(f"  {h.get('question', h.get('entry_id'))}")
                 print(f"    {h.get('baseline')}% → {h.get('current')}%  ({h.get('abs_pp')}pp)")
                 print(f"    Baseline updated to {h.get('current')}%")
                 print()
         else:
-            print(f"NO_REPLY — {checked} entries checked, no threshold crossings.")
+            print(f"Checked {checked} monitored market(s). No changes exceeded the threshold.")
 
         if errors:
-            print(f"\n{len(errors)} error(s):")
+            print(f"\nCould not check {len(errors)} market(s):")
             for e in errors:
-                print(f"  {e.get('entry_id')}: {e.get('error')}")
+                label = e.get("entry_id", "unknown")
+                code = e.get("code", "SR_SOURCE_UNAVAILABLE")
+                print(f"  {label}: {e.get('message', e.get('error', 'Unknown error'))} ({code})")
 
         if settled_entries:
-            print(f"\n{len(settled_entries)} entries settled, consider removing:")
+            print(f"\n{len(settled_entries)} monitored market(s) appear settled and will not trigger new alerts:")
             for e in settled_entries:
                 print(f"  {e.get('question', e.get('entry_id', '?'))}")
 
@@ -1109,7 +1480,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     Moves global flags that appear before the subcommand to after it,
     so argparse subparsers can parse them correctly.
     """
-    commands = {"doctor", "add", "list", "remove", "run", "config", "schedule"}
+    commands = {"doctor", "add", "list", "show", "remove", "run", "config", "schedule"}
     # Find subcommand position
     cmd_idx = None
     for i, arg in enumerate(argv):
@@ -1166,6 +1537,12 @@ def main() -> int:
     p_list.add_argument("--category", default="", help="Filter by category")
     p_list.add_argument("--archived", action="store_true", help="Show archived entries")
 
+    # show
+    p_show = sub.add_parser("show", help="Show current probability for one monitored market")
+    p_show.add_argument("target", help="List number or keyword to match a monitored market")
+    p_show.add_argument("--output", choices=["text", "json"], default="text")
+    p_show.add_argument("--config", default="", help="Path to config JSON")
+
     # remove
     p_rm = sub.add_parser("remove", help="Remove entry by number")
     p_rm.add_argument("number", type=int, help="Entry number from 'list'")
@@ -1203,6 +1580,8 @@ def main() -> int:
         return cmd_add(args)
     elif cmd == "list":
         return cmd_list(args)
+    elif cmd == "show":
+        return cmd_show(args)
     elif cmd == "remove":
         return cmd_remove(args)
     elif cmd == "config":

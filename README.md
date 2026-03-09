@@ -60,6 +60,10 @@ python3 scripts/signalradar.py add <polymarket-url> [--category AI]
 # List all monitored entries / 列出所有监控条目
 python3 scripts/signalradar.py list
 
+# Show one monitored market / 查看单个监控市场
+python3 scripts/signalradar.py show 2
+python3 scripts/signalradar.py show gpt --output json
+
 # Remove an entry by number / 按编号移除条目
 python3 scripts/signalradar.py remove 3
 
@@ -68,6 +72,7 @@ python3 scripts/signalradar.py run [--dry-run] [--output json]
 
 # View or change settings / 查看或修改设置
 python3 scripts/signalradar.py config [key] [value]
+python3 scripts/signalradar.py config threshold.abs_pp 8.0
 
 # Manage auto-monitoring schedule / 管理自动监控调度
 python3 scripts/signalradar.py schedule [N|disable] [--driver crontab|openclaw]
@@ -75,6 +80,10 @@ python3 scripts/signalradar.py schedule [N|disable] [--driver crontab|openclaw]
 # Health check / 健康检查
 python3 scripts/signalradar.py doctor --output json
 ```
+
+For event URLs that expand to more than 3 markets, `add` now force-shows a market preview (count, type summary, and market list) and requires interactive confirmation. `--yes` is rejected on that large-batch path.
+
+对于展开后超过 3 个市场的事件链接，`add` 现在会强制先展示市场预览（数量、类型摘要、市场列表），并要求交互确认；该大批量路径下 `--yes` 会被拒绝。
 
 ## Delivery: Get Alerts Your Way / 推送方式
 
@@ -159,6 +168,8 @@ All optional. Works out of the box with defaults.
 | `baseline.cleanup_after_expiry_days` | 90 | Baseline cleanup after market ends / 市场到期后清理基线天数 |
 
 See [`references/config.md`](references/config.md) for full reference. / 完整参考请查看 `references/config.md`。
+
+`run --output json` keeps the frozen fields (`status`, `request_id`, `ts`, `hits`, `errors`) and may include an `observations` array for agent-side filtering.
 
 ## OpenClaw Install / OpenClaw 安装
 

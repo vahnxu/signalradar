@@ -62,6 +62,48 @@ def load_json_config(path: Path | None) -> dict[str, Any]:
     return obj
 
 
+def save_json_config(path: Path, data: dict[str, Any]) -> None:
+    """Atomically write a generic JSON config file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), suffix=".tmp", prefix=".config_"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.rename(tmp_path, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def get_nested_value(data: dict[str, Any], key_path: str) -> tuple[bool, Any]:
+    """Resolve a dotted config path like 'threshold.abs_pp'."""
+    current: Any = data
+    for part in key_path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def set_nested_value(data: dict[str, Any], key_path: str, value: Any) -> None:
+    """Set a dotted config path, creating intermediate dicts as needed."""
+    parts = key_path.split(".")
+    current: dict[str, Any] = data
+    for part in parts[:-1]:
+        next_value = current.get(part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[part] = next_value
+        current = next_value
+    current[parts[-1]] = value
+
+
 # ---------------------------------------------------------------------------
 # Watchlist CRUD
 # ---------------------------------------------------------------------------
