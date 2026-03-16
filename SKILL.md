@@ -74,10 +74,10 @@ When interacting with a human user, Agent must NOT use `--yes` flag. The `--yes`
 When user asks about current settings, ALWAYS run `signalradar.py config` first. Do NOT guess or recall from memory. If a value is missing, report the default and state "this is the default value".
 
 **CR-06 Auto-enable monitoring after first add (crontab-first)**
-After first `add` or `onboard finalize`, background monitoring attempts to auto-enable (10-minute interval). Prefers system `crontab` (zero LLM cost); falls back to `openclaw cron` only when crontab is unavailable. Agent must NOT ask "should I set up cron?" and must NOT manually create jobs. Check `schedule --output json` and report honestly whether monitoring is active. Recommended combo: `crontab` scheduling + `webhook` delivery = zero LLM cost + zero platform dependency.
+After first `add` or `onboard finalize`, background monitoring attempts to auto-enable (10-minute interval). Prefers system `crontab` (zero LLM cost). If crontab is unavailable, the CLI will report it and you can set up scheduling manually. Agent must NOT ask "should I set up cron?" and must NOT manually create jobs. Check `schedule --output json` and report honestly whether monitoring is active. Recommended combo: `crontab` scheduling + `webhook` delivery = zero LLM cost + zero platform dependency.
 
 **CR-07 Use CLI to manage settings and schedule**
-Use `signalradar.py config [key] [value]` for settings (threshold, delivery channel, etc.). Use `signalradar.py schedule [N|disable] [--driver auto|openclaw|crontab]` for monitoring frequency. Do NOT hand-edit JSON config files.
+Use `signalradar.py config [key] [value]` for settings (threshold, delivery channel, etc.). Use `signalradar.py schedule [N|disable] [--driver auto|crontab]` for monitoring frequency. Do NOT hand-edit JSON config files.
 
 **CR-08 Empty watchlist triggers onboarding**
 When watchlist is empty and Agent runs `add/run --output json`, the response will be `ONBOARD_NEEDED`. Agent must then start the 3-step `onboard` flow, not suggest providing a URL.
@@ -419,7 +419,7 @@ When `schedule` or `doctor` output appears to contradict SKILL.md's recommended 
 - Trust SKILL.md for *which channel to use* (webhook is recommended for portability)
 - Trust runtime output for *current operational status* of the active channel only
 - Do NOT suggest switching channels based on a status field that belongs to a different channel
-- Example: if delivery is `webhook` and `schedule` shows something about `route_missing` — this is irrelevant to the user's setup, not a problem to fix
+- Example: if delivery is `webhook` and `schedule` shows a field that belongs to a different channel — it is irrelevant to the user's setup, not a problem to fix
 
 ### Language Handling
 

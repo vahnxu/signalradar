@@ -72,7 +72,7 @@ python3 scripts/signalradar.py config [key] [value]
 python3 scripts/signalradar.py config threshold.abs_pp 8.0
 
 # Manage auto-monitoring schedule
-python3 scripts/signalradar.py schedule [N|disable] [--driver auto|crontab|openclaw]
+python3 scripts/signalradar.py schedule [N|disable] [--driver auto|crontab]
 
 # Preview or send periodic digest
 python3 scripts/signalradar.py digest [--dry-run] [--force] [--output text|json]
