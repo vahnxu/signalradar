@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """SignalRadar market normalization helpers.
 
-v0.5.0: Slimmed down. The orchestration logic moved to signalradar.py.
-This module retains extract_probability() and normalize_item() for backward
-compatibility (used by ingest_polymarket.py and tests).
-
-For new code, prefer importing from discover_entries.py directly.
+v0.8.0 note:
+- orchestration lives in signalradar.py
+- this module remains as a compatibility helper for tests and older imports
 """
 
 from __future__ import annotations

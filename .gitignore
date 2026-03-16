@@ -10,3 +10,13 @@ cache/*
 !cache/.gitkeep
 memory/*
 !memory/.gitkeep
+
+# Runtime config (lives at ~/.signalradar/ since v1.0)
+config/signalradar_config.json
+config/watchlist.json
+
+# Development-only files
+scripts/sr_prepublish_gate.py
+scripts/sr_smoke_test.py
+RELEASE_FINGERPRINT.json
+TODO.md

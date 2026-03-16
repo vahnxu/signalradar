@@ -15,14 +15,19 @@
 ## Precedence (High to Low)
 
 1. CLI args (current run)
-2. `config/signalradar_config.json` (via `--config` or `SIGNALRADAR_CONFIG`)
+2. `~/.signalradar/config/signalradar_config.json` (via `--config` or `SIGNALRADAR_CONFIG`)
 3. `DEFAULT_CONFIG` in `scripts/config_utils.py`
 
 ## Config Path Resolution
 
 - First: `--config /path/to/signalradar_config.json`
 - Then: env `SIGNALRADAR_CONFIG`
-- Fallback: `<workspace>/config/signalradar_config.json`
+- Fallback: `~/.signalradar/config/signalradar_config.json`
+
+Runtime data root:
+
+- Default: `~/.signalradar/`
+- Override for testing: `SIGNALRADAR_DATA_DIR=/tmp/signalradar`
 
 ## CLI Dotted Keys
 
@@ -53,12 +58,15 @@ signalradar.py config profile.timezone Asia/Shanghai
   },
   "delivery": {
     "primary": {
-      "channel": "openclaw",
-      "target": "direct"
+      "channel": "webhook",
+      "target": ""
     }
   },
   "digest": {
-    "frequency": "weekly"
+    "frequency": "weekly",
+    "day_of_week": "monday",
+    "time_local": "09:00",
+    "top_n": 10
   },
   "baseline": {
     "cleanup_after_expiry_days": 90
@@ -71,7 +79,14 @@ signalradar.py config profile.timezone Asia/Shanghai
 
 ## Watchlist Storage
 
-Monitored entries are stored in `config/watchlist.json` (not in config.json).
+Monitored entries are stored in `~/.signalradar/config/watchlist.json` (not in config.json).
+
+Related runtime paths:
+
+- Baselines: `~/.signalradar/cache/baselines/`
+- Audit log: `~/.signalradar/cache/events/signal_events.jsonl`
+- Last run metadata: `~/.signalradar/cache/last_run.json`
+- Digest snapshot state: `~/.signalradar/cache/digest_state.json`
 
 ```json
 {
@@ -144,11 +159,18 @@ A HIT is triggered when `|current - baseline| >= applicable_threshold`.
 
 ## Delivery Adapters
 
-| Channel | Target | Description |
-|---------|--------|-------------|
-| `openclaw` | `direct` | OpenClaw platform messaging (default when installed via ClawHub) |
-| `file` | `/path/to/alerts.jsonl` | Appends alerts to local JSONL file |
-| `webhook` | `https://hooks.slack.com/...` | HTTP POST to any webhook endpoint |
+| Channel | Target | Portability | Description |
+|---------|--------|-------------|-------------|
+| `webhook` (recommended) | `https://...` | All platforms | HTTP POST to any webhook endpoint (Slack, Telegram Bot API, Discord, etc.). Zero platform dependency. |
+| `file` | `/path/to/alerts.jsonl` | All platforms | Appends alerts to local JSONL file. |
+| `openclaw` | `direct` | OpenClaw only | OpenClaw platform messaging. Not portable to other platforms. Background push requires reply route capture. |
+
+Unsupported channels (for example `telegram`) are rejected by `config` validation and reported by `doctor`.
+不支持的通道（例如 `telegram`）会在 `config` 写入时被拒绝，并在 `doctor` 中报告。
+
+### Recommended: webhook
+
+`webhook` is the recommended delivery channel. It works on any platform (OpenClaw, Claude Code, standalone) with zero LLM cost when paired with `crontab` scheduling.
 
 Example for Slack webhook:
 
@@ -163,16 +185,51 @@ Example for Slack webhook:
 }
 ```
 
-For standalone use (not via OpenClaw), set delivery to `file` or `webhook`.
+Example for Telegram Bot API:
+
+```json
+{
+  "delivery": {
+    "primary": {
+      "channel": "webhook",
+      "target": "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>"
+    }
+  }
+}
+```
+
+Example for Discord webhook:
+
+```json
+{
+  "delivery": {
+    "primary": {
+      "channel": "webhook",
+      "target": "https://discord.com/api/webhooks/YOUR/WEBHOOK/URL"
+    }
+  }
+}
+```
+
+The webhook payload includes both `text` (Slack, Telegram, MS Teams) and `content` (Discord) fields for broad compatibility.
+
+### openclaw (OpenClaw platform only)
+
+`openclaw` delivery works automatically in OpenClaw interactive chat (Agent reply IS the notification) and background monitoring (via `openclaw cron` announce). Not portable — depends on OpenClaw platform.
 
 ## Periodic Report (Digest)
 
 | Setting | Values | Default |
 |---------|--------|---------|
 | `digest.frequency` | `off`, `daily`, `weekly`, `biweekly` | `weekly` |
+| `digest.day_of_week` | `monday` ... `sunday` | `monday` |
+| `digest.time_local` | `HH:MM` 24-hour local time | `09:00` |
+| `digest.top_n` | `1` ... `50` | `10` |
 
 - Uses the same delivery channel as HIT alerts.
-- Reports all entries: current probability, change since last report, settled status.
+- Compares against the previous digest snapshot stored in `~/.signalradar/cache/digest_state.json`, not against the per-run alert baseline.
+- Includes both entries that already triggered realtime HIT alerts and entries with net-over-period changes that never crossed the realtime threshold.
+- Human-readable digest output groups large multi-market events by event and shows top movers only; full detail remains available via `digest --output json`.
 - Settled entries are flagged with a recommendation to remove.
 
 ## Baseline Cleanup
@@ -188,7 +245,7 @@ Cleanup removes baseline files when the market's end date has passed by more tha
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `profile.timezone` | `Asia/Shanghai` | Timezone for user-facing timestamps |
-| `profile.language` | `""` (empty) | Empty = follow platform language. Set a value (e.g. `"zh"`, `"en"`) to override. |
+| `profile.language` | `""` (empty) | Controls system-message language only. Use `zh` or `en`; empty uses automatic detection (environment first, timezone fallback). Market titles/questions remain in original English. |
 
 ## Removed in v0.5.0
 
@@ -204,12 +261,17 @@ The following config fields are no longer supported:
 
 ## Scheduling (Auto-Monitoring)
 
-After the first successful `add`, SignalRadar automatically enables 10-minute cron monitoring (v0.5.3+). The actual monitoring frequency is managed by the `schedule` command, not by editing config values.
+After the first successful `add` or `onboard finalize`, SignalRadar attempts to auto-enable 10-minute background monitoring (v0.9.0). Prefers system `crontab` with `--push` (zero LLM cost, delivers via `openclaw message send`); falls back to `openclaw cron` when crontab is unavailable. **Route gate**: when `delivery.primary.channel == openclaw` + `crontab` driver + no captured reply route, the CLI refuses to arm and returns `route_missing` instead of silently enabling a cron job that cannot push. The actual monitoring frequency is managed by the `schedule` command, not by editing config values.
+
+On the first successful `add` or `onboard finalize`, if `profile.language` is still empty, SignalRadar persists the detected system-message language into the user config so background jobs keep using the same language later.
 
 ```bash
 signalradar.py schedule              # Show current status (driver, interval, last_run)
-signalradar.py schedule 10           # Set 10-minute interval (default driver: crontab)
-signalradar.py schedule 10 --driver openclaw  # Use openclaw cron instead
+signalradar.py schedule 10           # Auto driver (crontab-first)
+signalradar.py schedule 10 --driver openclaw  # Force openclaw cron
+
+The first automatic digest is bootstrap-only: SignalRadar records `~/.signalradar/cache/digest_state.json` silently and starts automatic user-facing digest delivery from the next report cycle.
+signalradar.py schedule 10 --driver crontab   # Force system crontab
 signalradar.py schedule disable      # Disable auto-monitoring completely
 ```
 
@@ -221,10 +283,11 @@ Minimum interval: 5 minutes (prevents overlapping runs).
 
 | Driver | How it works | Cost |
 |--------|-------------|------|
-| `crontab` (default) | System crontab, runs shell command directly | Zero model cost |
-| `openclaw` | OpenClaw platform cron, `--session isolated` | Has model invocation cost |
+| `openclaw` | OpenClaw platform cron, `--session isolated`, announce delivery for OpenClaw background runs | Has model invocation cost |
+| `crontab` (preferred) | System crontab, runs shell command directly; uses `--push` to deliver notifications via `openclaw message send` (zero LLM cost) | Zero model cost |
 
 ## Notes
 
 - Runtime behavior is controlled by CLI/config; env vars are only used for path overrides.
 - `config.example.json` in the repo root shows a minimal working config.
+- `config/default_config.json` is the shipped template for first-run initialization.

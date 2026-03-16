@@ -23,7 +23,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "per_entry_abs_pp": {},
     },
     "delivery": {
-        "primary": {"channel": "openclaw", "target": "direct"},
+        "primary": {"channel": "webhook", "target": ""},
         "fallback": [],
     },
     "source": {
@@ -31,6 +31,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "digest": {
         "frequency": "weekly",
+        "day_of_week": "monday",
+        "time_local": "09:00",
+        "top_n": 10,
     },
     "baseline": {
         "cleanup_after_expiry_days": 90,

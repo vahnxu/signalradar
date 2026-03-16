@@ -53,8 +53,13 @@ User adds URL  --->  SignalRadar  --->  Delivery Adapter
 ## Commands / 命令
 
 ```bash
+# First-time setup (bot mode, 3-step) / 首次设置（bot 模式，3 步）
+python3 scripts/signalradar.py onboard --step preview --output json
+python3 scripts/signalradar.py onboard --step confirm --keep 1,2,3 --output json
+python3 scripts/signalradar.py onboard --step finalize --output json
+
 # Add a market (guided setup or by URL) / 添加市场（引导式或通过链接）
-python3 scripts/signalradar.py add                              # Guided setup / 引导式
+python3 scripts/signalradar.py add                              # Guided setup (terminal) / 引导式（终端）
 python3 scripts/signalradar.py add <polymarket-url> [--category AI]
 
 # List all monitored entries / 列出所有监控条目
@@ -68,14 +73,17 @@ python3 scripts/signalradar.py show gpt --output json
 python3 scripts/signalradar.py remove 3
 
 # Run a check / 执行检查
-python3 scripts/signalradar.py run [--dry-run] [--output json]
+python3 scripts/signalradar.py run [--dry-run] [--output json|openclaw]
 
 # View or change settings / 查看或修改设置
 python3 scripts/signalradar.py config [key] [value]
 python3 scripts/signalradar.py config threshold.abs_pp 8.0
 
 # Manage auto-monitoring schedule / 管理自动监控调度
-python3 scripts/signalradar.py schedule [N|disable] [--driver crontab|openclaw]
+python3 scripts/signalradar.py schedule [N|disable] [--driver auto|crontab|openclaw]
+
+# Preview or send periodic digest / 预览或发送定期报告
+python3 scripts/signalradar.py digest [--dry-run] [--force] [--output text|json|openclaw]
 
 # Health check / 健康检查
 python3 scripts/signalradar.py doctor --output json
@@ -87,7 +95,10 @@ For event URLs that expand to more than 3 markets, `add` now force-shows a marke
 
 ## Delivery: Get Alerts Your Way / 推送方式
 
-### Webhook (Slack, Discord, Telegram, etc.)
+### Webhook (Recommended / 推荐) — Slack, Discord, Telegram Bot API, etc.
+
+Portable across all platforms (OpenClaw, Claude Code, standalone). Zero LLM cost when paired with `crontab` scheduling.
+可跨所有平台使用（OpenClaw、Claude Code、独立部署）。配合 `crontab` 调度，零 LLM 成本。
 
 ```json
 {
@@ -100,7 +111,7 @@ For event URLs that expand to more than 3 markets, `add` now force-shows a marke
 }
 ```
 
-Save as `config/signalradar_config.json`. / 保存为 `config/signalradar_config.json`。
+Save as `~/.signalradar/config/signalradar_config.json`. / 保存为 `~/.signalradar/config/signalradar_config.json`。
 
 ### File (local JSONL log) / 文件（本地 JSONL 日志）
 
@@ -115,22 +126,46 @@ Save as `config/signalradar_config.json`. / 保存为 `config/signalradar_config
 }
 ```
 
-### OpenClaw (platform messaging / 平台消息)
+### OpenClaw (platform messaging / 平台消息 — OpenClaw only)
 
-Default when installed via ClawHub. See [OpenClaw install](#openclaw-install) below.
-通过 ClawHub 安装时为默认选项。见下方 [OpenClaw 安装](#openclaw-install)。
+Default when installed via ClawHub. Not portable to other platforms. See [OpenClaw install](#openclaw-install) below.
+通过 ClawHub 安装时为默认选项。不可移植到其他平台。见下方 [OpenClaw 安装](#openclaw-install)。
 
 ## Auto-Monitoring / 自动监控
 
-SignalRadar automatically enables 10-minute cron monitoring after the first successful `add` (v0.5.3+).
+SignalRadar attempts to auto-enable 10-minute background monitoring after the first successful `add` or `onboard finalize` (v0.9.0). Prefers system `crontab` with `--push` (zero LLM cost); falls back to `openclaw cron` when crontab is unavailable.
 
-SignalRadar 在首次 `add` 成功后自动启用 10 分钟 cron 监控（v0.5.3+）。
+**Route gate (OpenClaw users):** When using `openclaw` delivery with `crontab` scheduling, auto-monitoring requires a captured reply route (`~/.signalradar/cache/openclaw_reply_route.json`). If no route is stored, the CLI **refuses to arm** the cron job and returns `route_missing` — it will not silently enable a schedule that cannot push. The route is automatically captured during any foreground bot interaction. Use `schedule --output json` to check `route_ready` status.
+
+SignalRadar 在首次 `add` 或 `onboard finalize` 成功后尝试自动启用 10 分钟后台监控（v0.9.0）。默认优先使用系统 `crontab` + `--push`（零 LLM 成本）；仅在 crontab 不可用时回退到 `openclaw cron`。**Route gate**：当推送通道为 `openclaw` + `crontab` 驱动 + 尚无已捕获的 reply route 时，CLI 拒绝启用 cron 任务并返回 `route_missing`，不会静默启用一个无法推送的调度。Route 在任意前台 bot 交互时自动捕获。用 `schedule --output json` 检查 `route_ready` 状态。
+
+If `profile.language` is still empty on the first successful `add`, SignalRadar snapshots the detected system-message language into user config so background notifications stay consistent.
+如果首次 `add` 成功时 `profile.language` 仍为空，SignalRadar 会把检测到的系统文案语言写入用户配置，避免后台通知再依赖瞬时环境猜测。
 
 ```bash
 signalradar.py schedule              # Show current status / 显示当前状态
-signalradar.py schedule 30           # Change to 30-minute interval / 改为 30 分钟间隔
+signalradar.py schedule 30           # Auto driver (crontab-first) / 自动选择驱动（优先 crontab）
+signalradar.py schedule 10 --driver openclaw  # Force OpenClaw cron / 强制使用 OpenClaw cron
+signalradar.py schedule 10 --driver crontab   # Force system crontab / 强制使用系统 crontab
 signalradar.py schedule disable      # Disable auto-monitoring / 禁用自动监控
 ```
+
+## Runtime Data Directory / 运行数据目录
+
+SignalRadar stores user data outside the skill directory so `clawhub update` will not wipe your watchlist or baselines.
+
+SignalRadar 将用户数据存放在 skill 目录外，避免 `clawhub update` 覆盖监控列表和基线。
+
+- Default data root / 默认数据目录：`~/.signalradar/`
+- Config / 配置：`~/.signalradar/config/signalradar_config.json`
+- Watchlist / 监控列表：`~/.signalradar/config/watchlist.json`
+- Baselines / 基线：`~/.signalradar/cache/baselines/`
+- Audit log / 审计日志：`~/.signalradar/cache/events/signal_events.jsonl`
+- Last run metadata / 最近运行状态：`~/.signalradar/cache/last_run.json`
+- Digest snapshot state / 周报快照状态：`~/.signalradar/cache/digest_state.json`
+
+For local testing, override with `SIGNALRADAR_DATA_DIR=/tmp/signalradar`.
+本地测试可使用 `SIGNALRADAR_DATA_DIR=/tmp/signalradar` 覆盖默认目录。
 
 ### Threshold vs Frequency / 阈值 vs 频率
 
@@ -163,13 +198,38 @@ All optional. Works out of the box with defaults.
 |----------------|-------------------|---------------------|
 | `threshold.abs_pp` | 5.0 | Alert threshold in percentage points / 警报阈值（百分点） |
 | `threshold.per_category_abs_pp` | `{}` | Per-category override / 按分类覆盖阈值 |
-| `delivery.primary.channel` | `openclaw` | Delivery adapter / 推送适配器 |
-| `digest.frequency` | `weekly` | Periodic report frequency / 定期报告频率 |
+| `delivery.primary.channel` | `webhook` | Supported: `webhook` (recommended), `openclaw`, `file` / 支持的推送通道 |
+| `digest.frequency` | `weekly` | `off`, `daily`, `weekly`, `biweekly` / 定期报告频率 |
+| `digest.day_of_week` | `monday` | Weekly digest weekday / 定期报告星期 |
+| `digest.time_local` | `09:00` | Local send time for digest / 定期报告本地发送时间 |
+| `digest.top_n` | `10` | Top movers shown in human digest / 周报文本中展示的最大变化条目数 |
 | `baseline.cleanup_after_expiry_days` | 90 | Baseline cleanup after market ends / 市场到期后清理基线天数 |
+| `profile.language` | `""` | System-message locale (`zh` / `en`), empty = automatic detection (env first, timezone fallback) / 系统文案语言 |
 
 See [`references/config.md`](references/config.md) for full reference. / 完整参考请查看 `references/config.md`。
 
 `run --output json` keeps the frozen fields (`status`, `request_id`, `ts`, `hits`, `errors`) and may include an `observations` array for agent-side filtering.
+
+`run --output openclaw` is reserved for platform scheduling. It prints `HEARTBEAT_OK` on quiet runs, user-ready alert text on HIT runs, and digest text when a scheduled digest is due and the primary delivery channel is `openclaw`.
+
+`add --output json` returns structured `added` / `skipped` results and includes a `schedule` object when the first successful `add` attempts auto-monitoring (the object is present even when route gate blocks arming, with `auto_enabled: false`). `onboard --step finalize --output json` returns its own `ONBOARD_COMPLETE` payload with a separate `schedule` field.
+
+`digest --output json` returns a structured digest preview/snapshot. Human-readable digest text groups large multi-market events by event and shows top movers instead of dumping every market.
+
+## Digest / 定期报告
+
+SignalRadar v0.8.3 includes a periodic digest. It compares the current monitored state against the previous digest snapshot, not against the per-run alert baseline.
+
+SignalRadar v0.8.3 已包含定期报告功能。它比较的是“当前监控状态”和“上一份周报快照”，而不是单次运行的告警基线。
+
+- Includes both markets that already triggered realtime HIT alerts and markets with net-over-period changes that never crossed the realtime threshold.
+  同时包含“已触发实时 HIT 的市场”和“虽然没触发实时阈值、但周期净变化依然明显的市场”。
+- Uses grouped event summaries for large multi-market events.
+  对大量子市场的事件使用按事件分组的摘要展示。
+- Full detail remains available via `digest --output json`.
+  完整明细通过 `digest --output json` 提供。
+- The first automatic digest is bootstrap-only: SignalRadar records the initial digest snapshot silently, then starts user-facing automatic digest delivery from the next report cycle. Use `digest --force` if you want an immediate preview.
+  首次自动周报只做静默建快照：SignalRadar 会先记录初始周报快照，从下一个周期开始才自动向用户发送周报。如需立即预览，请使用 `digest --force`。
 
 ## OpenClaw Install / OpenClaw 安装
 

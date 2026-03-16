@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Compute SignalEvent objects from normalized snapshots and baseline cache.
 
-v0.5.0: Extracts check_entry() as importable function. Baseline paths flattened
-(no mode subdirectory). safe_name() imported from discover_entries.
+v0.8.0 runtime:
+- single-source watchlist and flattened baseline paths
+- importable check_entry() for CLI-driven orchestration
+- result payloads carry baseline timestamps for show/observation/digest UX
 """
 
 from __future__ import annotations
@@ -137,6 +139,7 @@ def check_entry(
             "entry_id": entry_id,
             "current": current_prob,
             "baseline": current_prob,
+            "baseline_ts": now,
             "event": None,
         }
     else:
@@ -183,6 +186,7 @@ def check_entry(
             "entry_id": entry_id,
             "current": current_prob,
             "baseline": baseline,
+            "baseline_ts": baseline_ts,
             "abs_pp": round(abs_pp, 6) if hit else round(abs_pp, 6),
             "event": event,
         }
@@ -215,8 +219,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="SignalRadar decide step")
     parser.add_argument("--snapshots", required=True, help="Normalized snapshots JSON file")
     parser.add_argument("--out-events", required=True, help="Output SignalEvent JSON file")
-    parser.add_argument("--baseline-dir", default="cache/baselines", help="Baseline storage directory")
-    parser.add_argument("--audit-log", default="cache/events/signal_events.jsonl", help="Audit log JSONL path")
+    parser.add_argument("--baseline-dir", default="~/.signalradar/cache/baselines", help="Baseline storage directory")
+    parser.add_argument("--audit-log", default="~/.signalradar/cache/events/signal_events.jsonl", help="Audit log JSONL path")
     parser.add_argument("--threshold-abs-pp", type=float, default=5.0, help="Default abs_pp threshold")
     parser.add_argument("--emit-baseline-events", action="store_true", help="Emit baseline init records")
     parser.add_argument("--cleanup-expired", action="store_true", help="Cleanup baselines for inactive entries")

@@ -24,7 +24,7 @@ Every event record must include:
 
 Recommended append-only file:
 
-- `cache/events/signal_events.jsonl`
+- `~/.signalradar/cache/events/signal_events.jsonl`
 
 ## SLO (Rolling 24h)
 
