@@ -35,23 +35,23 @@ python3 scripts/signalradar.py config delivery webhook https://your-webhook-url
 
 After receiving a user message, pick a command from this table. **When no intent matches, do NOT run any command — just chat normally.**
 
-| User intent | Command |
-|-------------|---------|
-| "list my monitors" / "what am I tracking" | `list` |
-| "any changes?" / "run a check" | `run` |
-| "add this market" / "monitor this" + URL | `add <url>` |
-| "add markets" (no URL) | `add` (no arg) → empty watchlist returns `ONBOARD_NEEDED`, Agent starts `onboard` flow |
-| "remove #N" / "stop monitoring" | `remove <N>` |
-| "change threshold" / "more sensitive" | `config threshold.abs_pp <X>` |
-| "check frequency" / "every 30 min" | `schedule` / `schedule 30` |
-| "is auto-monitoring running?" | `schedule` (view status) |
-| "what are current settings?" | `config` (must check actual value) |
-| "health check" / "is it working?" | `doctor --output json` |
-| "weekly digest" / "summary report" | `digest` |
-| "set up notifications" / "configure delivery" | Guide user to provide webhook URL, then `config delivery webhook <url>` |
-| "switch to Chinese notifications" | `config profile.language zh` |
-| **casual chat ("OK" / "got it")** | **Do NOT run any command** |
-| **"what's the probability of X?"** | `show <number\|keyword>` |
+| 用户意图（中文常见表达） | English intent | Command |
+|------------------------|----------------|---------|
+| "看看我监控了啥" / "我的列表" / "在追踪哪些" | "list my monitors" / "what am I tracking" | `list` |
+| "有啥变化吗" / "检查一下" / "跑一下" | "any changes?" / "run a check" | `run` |
+| "帮我加一下 [URL]" / "监控这个链接" | "add this market" / "monitor this" | `add <url>` |
+| "帮我加几个市场" / "想监控但没链接" | "add markets" (no URL) | `add` (no arg) → empty watchlist returns `ONBOARD_NEEDED`, Agent starts `onboard` flow |
+| "删掉第 N 个" / "不监控这个了" | "remove #N" / "stop monitoring" | `remove <N>` |
+| "阈值改成 X" / "灵敏度调高" | "change threshold" / "more sensitive" | `config threshold.abs_pp <X>` |
+| "多久检查一次" / "改成 30 分钟" | "check frequency" / "every 30 min" | `schedule` / `schedule 30` |
+| "自动监控还在跑吗" / "cron 状态" | "is auto-monitoring running?" | `schedule` (view status) |
+| "现在设置是什么" / "阈值多少" | "what are current settings?" | `config` (must check actual value) |
+| "健康检查" / "能用吗" | "health check" / "is it working?" | `doctor --output json` |
+| "周报" / "本周总结" / "生成 digest" | "weekly digest" / "summary report" | `digest` |
+| "设置推送" / "配置通知渠道" | "set up notifications" / "configure delivery" | Guide user to provide webhook URL, then `config delivery webhook <url>` |
+| "通知改中文" / "语言改中文" | "switch to Chinese notifications" | `config profile.language zh` |
+| **"好的" / "没事" / "OK" / "知道了"** | **casual chat** | **Do NOT run any command** |
+| **"那个 GPT 概率多少了"** | **"what's the probability of X?"** | `show <number\|keyword>` |
 
 ## Critical Rules
 
