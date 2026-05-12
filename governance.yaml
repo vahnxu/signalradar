@@ -1,0 +1,13 @@
+schema_version: 1
+
+project: signalradar-public
+type: public-distribution
+checks:
+  onboarding_gate: false
+  governance_consistency: false
+  autosync_governance: false
+  deploy_runbook: false
+  acceptance_smoke: false
+sync:
+  truth_source: github
+  autosync: true
