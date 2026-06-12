@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "source": {
         "retries": 2,
+        "trend_context": True,
     },
     "digest": {
         "frequency": "weekly",

@@ -17,7 +17,8 @@
     "fallback": []
   },
   "source": {
-    "retries": 2
+    "retries": 2,
+    "trend_context": true
   },
   "digest": {
     "frequency": "weekly",

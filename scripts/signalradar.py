@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.0.8"
+__version__ = "1.1.0"
 
 import argparse
 import json
@@ -55,12 +55,14 @@ from discover_entries import (
     ONBOARDING_URLS,
     extract_probability,
     fetch_market_current_result,
+    fetch_price_history_points,
     is_settled,
     normalize_market,
     parse_polymarket_url,
     resolve_event,
+    summarize_trend,
 )
-from route_delivery import deliver_digest, deliver_hit, severity_for_event
+from route_delivery import context_lines, deliver_digest, deliver_hit, severity_for_event
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +524,52 @@ def _parse_cli_value(raw_value: str) -> Any:
             return raw_value
 
 
+def _trend_context_enabled(config: dict[str, Any]) -> bool:
+    """Kill switch for HIT-alert context enrichment (trend + vol/liq lines).
+
+    Only an explicit False disables it; missing key or junk values degrade
+    to the default (enabled).
+    """
+    source = config.get("source", {})
+    value = source.get("trend_context", True) if isinstance(source, dict) else True
+    return value is not False
+
+
+def _enrich_hit_event(
+    event: dict[str, Any],
+    current_market: dict[str, Any] | None,
+    config: dict[str, Any],
+) -> None:
+    """Attach optional display-context fields to a HIT event. NEVER raises.
+
+    Additive-only: adds trend / volume_24h / liquidity / clob_token_id when
+    available; absent fields simply omit their alert lines. Runs AFTER
+    check_entry wrote the audit record, so the audit log stays byte-stable.
+    Display-only by design — never feeds decisions or baselines. Gated
+    entirely by source.trend_context.
+    """
+    try:
+        if not _trend_context_enabled(config):
+            return
+        if not isinstance(current_market, dict):
+            return
+        vol = current_market.get("volume_24h")
+        if isinstance(vol, (int, float)):
+            event["volume_24h"] = float(vol)
+        liq = current_market.get("liquidity")
+        if isinstance(liq, (int, float)):
+            event["liquidity"] = float(liq)
+        token_id = str(current_market.get("clob_token_id", "") or "")
+        if not token_id:
+            return
+        event["clob_token_id"] = token_id
+        trend = summarize_trend(fetch_price_history_points(token_id))
+        if trend is not None:
+            event["trend"] = trend
+    except Exception:  # noqa: BLE001 — context must never break alerting
+        pass
+
+
 def _validate_config_value(key: str, value: Any) -> str | None:
     if key == "threshold.abs_pp" or key.startswith("threshold.per_category_abs_pp.") or key.startswith("threshold.per_entry_abs_pp."):
         try:
@@ -571,6 +619,9 @@ def _validate_config_value(key: str, value: Any) -> str | None:
             return "Minimum interval is 5 minutes."
         if numeric > 10080:
             return "Maximum interval is 10080 minutes (1 week)."
+    if key == "source.trend_context":
+        if not isinstance(value, bool):
+            return "source.trend_context must be true or false."
     return None
 
 
@@ -751,8 +802,10 @@ def _openclaw_run_text(hits: list[dict[str, Any]], run_ts: str, config: dict[str
         current = hit.get("current")
         abs_pp = hit.get("abs_pp")
         lines.append(f"{idx}. {question}")
-        lines.append(f"   {baseline}% \u2192 {current}% ({abs_pp}pp)")
+        lines.append(f"   \U0001f3af {baseline}% \u2192 {current}% ({abs_pp}pp)")  # 🎯
         lines.append(f"   Baseline updated to {current}%")
+        # Optional 7d trend / vol-liq context; emits no lines when absent
+        lines.extend(context_lines(hit, indent="   "))
     lines.append("")
     lines.append(f"Run time: {ts_display}")
     return "\n".join(lines)
@@ -1104,10 +1157,9 @@ def _format_digest_text(report: dict[str, Any], config: dict[str, Any]) -> str:
         "\u0037\ufe0f\u20e3", "\u0038\ufe0f\u20e3", "\u0039\ufe0f\u20e3",
         "\U0001f51f",
     ]
-    _sep = "\u2500" * 19
-
     lines = [
         f"\U0001f4ca {_digest_title(frequency)}",
+        "",
         f"\U0001f4c5 {generated_display}",
         "",
     ]
@@ -1159,7 +1211,7 @@ def _format_digest_text(report: dict[str, Any], config: dict[str, Any]) -> str:
         changes_lines.append(f"  {r.get('previous_probability')}% \u2192 {r.get('current')}% ({direction} {sign}{delta}pp)")
 
     if changes_lines:
-        lines.extend([_sep, "\U0001f4c8 Changes", _sep])
+        lines.append("\U0001f4c8 Changes")
         lines.extend(changes_lines)
         lines.append("")
 
@@ -1240,13 +1292,13 @@ def _format_digest_text(report: dict[str, Any], config: dict[str, Any]) -> str:
         stable_lines.append(f"  (+{remaining_stable} more stable markets)")
 
     if stable_lines:
-        lines.extend([_sep, "\U0001f4a4 Stable", _sep])
+        lines.append("\U0001f4a4 Stable")
         lines.extend(stable_lines)
         lines.append("")
 
     # --- 3. New entries ---
     if new_entries:
-        lines.extend([_sep, "\U0001f195 New entries", _sep])
+        lines.append("\U0001f195 New entries")
         for row in new_entries:
             lines.append(f"  \u2022 {row.get('question', row.get('entry_id', '?'))}")
         lines.append("")
@@ -1272,7 +1324,7 @@ def _format_digest_text(report: dict[str, Any], config: dict[str, Any]) -> str:
             expiring_lines.append(f"  \u2022 {row.get('question', row.get('entry_id', '?'))} ({days_left} days)")
 
     if expiring_lines:
-        lines.extend([_sep, "\u23f3 Expiring soon", _sep])
+        lines.append("\u23f3 Expiring soon")
         lines.extend(expiring_lines)
         lines.append("")
 
@@ -1293,6 +1345,9 @@ def _format_digest_text(report: dict[str, Any], config: dict[str, Any]) -> str:
             lines.append(f"  (+{len(settled_entries) - max_show} more)")
         lines.append("")
 
+    while lines and lines[-1] in ("", None):
+        lines.pop()
+    lines.append("")
     lines.append("\u2014 Powered by SignalRadar")
     return "\n".join(line for line in lines if line is not None).strip()
 
@@ -1739,8 +1794,9 @@ def _ensure_auto_monitoring(interval: int = 10, config_override: str = "", quiet
     """Check if cron exists; if not, set it up. Idempotent.
 
     When delivery.primary.channel == openclaw and the resolved driver is
-    crontab (which uses --push), refuse to arm if no reply route is stored.
-    Explicit --driver openclaw bypasses this gate (platform announce path).
+    crontab (which uses --push), warn if no reply route is stored while still
+    enabling monitoring. Explicit --driver openclaw bypasses this warning
+    (platform announce path).
     """
     cron_status = _check_cron_status()
     if cron_status["enabled"]:
@@ -2983,6 +3039,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         if result["decision"] == "HIT" and result["event"] is not None:
             # Attach threshold for ⚡ marker
             result["event"]["_effective_threshold"] = threshold
+            # Display-only context (7d trend + vol/liq); never raises,
+            # only fetches history for HITs (quiet runs add zero requests)
+            _enrich_hit_event(result["event"], current_market, config)
             hits.append(result["event"])
 
     # --- Multi-HIT merged delivery ---

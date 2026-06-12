@@ -11,12 +11,17 @@ import json
 import re
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
 GAMMA_API_BASE = "https://gamma-api.polymarket.com"
+CLOB_API_BASE = "https://clob.polymarket.com"
 HTTP_TIMEOUT = 15
+# Shorter than HTTP_TIMEOUT: trend context is optional display data, and a
+# CLOB outage must not stall alert delivery for more than a few seconds.
+TREND_HTTP_TIMEOUT = 8
 USER_AGENT = "signalradar-skill/1.0"
 
 
@@ -287,7 +292,16 @@ def fetch_market_current_result(market_id: str) -> tuple[dict[str, Any] | None, 
     try:
         raw = _api_get(f"/markets/{market_id}")
         if isinstance(raw, dict):
-            return normalize_market(raw), None
+            market = normalize_market(raw)
+            if market is not None:
+                # Transient snapshot context for HIT-alert display only.
+                # Deliberately NOT added inside normalize_market: that output
+                # is persisted to watchlist.json by the add/discover flow,
+                # and these point-in-time values must not leak into it.
+                market["clob_token_id"] = extract_clob_token_id(raw)
+                market["volume_24h"] = _safe_float(raw.get("volume24hr"))
+                market["liquidity"] = _safe_float(raw.get("liquidityNum"))
+            return market, None
         return None, {
             "code": "SR_SOURCE_UNAVAILABLE",
             "message": "Polymarket API returned an unexpected response for this market.",
@@ -336,6 +350,96 @@ def fetch_market_current(market_id: str) -> dict[str, Any] | None:
     """
     market, _error = fetch_market_current_result(market_id)
     return market
+
+
+# ---------------------------------------------------------------------------
+# HIT-alert display context (v1.1.0): 7d price trend + volume/liquidity.
+# Display-only enrichment — never feeds decisions, baselines, or audit logs.
+# ---------------------------------------------------------------------------
+
+def _safe_float(value: Any) -> float | None:
+    """float() that returns None instead of raising on bad input."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_clob_token_id(raw: dict[str, Any]) -> str:
+    """First CLOB token id (tracks outcomes[0]='Yes', same side as outcomePrices[0]).
+
+    clobTokenIds from the gamma API is a JSON-encoded STRING like
+    '["98022...", "5383..."]' — same trap as outcomePrices. Returns "" when
+    missing or malformed.
+    """
+    ids = raw.get("clobTokenIds")
+    if isinstance(ids, str):
+        try:
+            ids = json.loads(ids)
+        except (json.JSONDecodeError, ValueError):
+            return ""
+    if isinstance(ids, list) and ids:
+        return str(ids[0]).strip()
+    return ""
+
+
+def fetch_price_history_points(clob_token_id: str) -> list[Any]:
+    """Fetch 7-day price history from the Polymarket CLOB API. NEVER raises.
+
+    Returns the raw history point list, or [] on any failure (network error,
+    timeout, HTTP error, bad JSON — and unknown tokens, for which CLOB
+    returns HTTP 200 with {"history": []} rather than an error).
+
+    Deliberately not routed through _api_get: different host, shorter
+    timeout, and a never-raise contract (alerts must deliver even when
+    CLOB is down).
+    """
+    token = str(clob_token_id or "").strip()
+    if not token:
+        return []
+    try:
+        url = (
+            f"{CLOB_API_BASE}/prices-history"
+            f"?market={urllib.parse.quote(token)}&interval=1w&fidelity=360"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=TREND_HTTP_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        history = data.get("history") if isinstance(data, dict) else None
+        return history if isinstance(history, list) else []
+    except Exception:  # noqa: BLE001 — graceful degradation by design
+        return []
+
+
+def summarize_trend(points: Any) -> dict[str, Any] | None:
+    """Summarize CLOB price-history points into percent stats. Pure; never raises.
+
+    Returns {"start_pct", "end_pct", "low_pct", "high_pct", "points"} or None
+    when fewer than 2 valid points survive filtering.
+    """
+    samples: list[tuple[int, float]] = []
+    for item in points if isinstance(points, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            t = int(item.get("t"))
+            p = float(item.get("p"))
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 <= p <= 1.0):
+            continue
+        samples.append((t, p))
+    if len(samples) < 2:
+        return None
+    samples.sort(key=lambda s: s[0])
+    probs = [p for _, p in samples]
+    return {
+        "start_pct": round(probs[0] * 100.0, 1),
+        "end_pct": round(probs[-1] * 100.0, 1),
+        "low_pct": round(min(probs) * 100.0, 1),
+        "high_pct": round(max(probs) * 100.0, 1),
+        "points": len(probs),
+    }
 
 
 # ---------------------------------------------------------------------------

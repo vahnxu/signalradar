@@ -42,6 +42,78 @@ def _format_event_time(ts_raw: str, config: dict[str, Any] | None = None) -> str
     return f"{local_dt.strftime('%Y-%m-%d %H:%M')} {tz_name}"
 
 
+def _fmt_pct(value: Any) -> str:
+    """Tidy percent for context lines: 48.0 -> '48%', 30.5 -> '30.5%'. '' on bad input."""
+    try:
+        f = round(float(value), 1)
+    except (TypeError, ValueError):
+        return ""
+    if f == int(f):
+        return f"{int(f)}%"
+    return f"{f}%"
+
+
+def _fmt_money(value: Any) -> str:
+    """Compact USD: 950 -> '$950', 21400 -> '$21.4k', 1200000 -> '$1.2M'.
+
+    '' on bad or negative input (callers omit the field entirely).
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if f < 0:
+        return ""
+    if f >= 1_000_000:
+        s = f"{f / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"${s}M"
+    if f >= 1_000:
+        s = f"{f / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"${s}k"
+    return f"${f:,.0f}"
+
+
+def context_lines(event: dict[str, Any], indent: str = "") -> list[str]:
+    """Optional HIT-alert context lines (7d trend, 24h volume/liquidity).
+
+    Returns [] when data is absent — callers emit nothing in that case, so
+    un-enriched events render byte-identical to pre-v1.1.0 output and no
+    'None%' artifacts can ever appear.
+    """
+    lines: list[str] = []
+    trend = event.get("trend")
+    if isinstance(trend, dict):
+        start = _fmt_pct(trend.get("start_pct"))
+        end = _fmt_pct(trend.get("end_pct"))
+        low = _fmt_pct(trend.get("low_pct"))
+        high = _fmt_pct(trend.get("high_pct"))
+        if start and end and low and high:
+            # Directional 7d emoji: 📈 up / 📉 down / ➡️ flat
+            try:
+                delta_7d = float(trend.get("end_pct")) - float(trend.get("start_pct"))
+            except (TypeError, ValueError):
+                delta_7d = 0.0
+            if delta_7d > 0:
+                trend_emoji = "\U0001f4c8"  # 📈
+            elif delta_7d < 0:
+                trend_emoji = "\U0001f4c9"  # 📉
+            else:
+                trend_emoji = "\u27a1\ufe0f"  # ➡️
+            lines.append(
+                f"{indent}{trend_emoji} 7d: {start} → {end} "
+                f"(low {low} · high {high})"  # ·
+            )
+    vol = _fmt_money(event.get("volume_24h"))
+    liq = _fmt_money(event.get("liquidity"))
+    if vol and liq:
+        lines.append(f"{indent}\U0001f4b0 24h vol {vol} · liq {liq}")  # 💰
+    elif vol:
+        lines.append(f"{indent}\U0001f4b0 24h vol {vol}")
+    elif liq:
+        lines.append(f"{indent}\U0001f4b0 liq {liq}")
+    return lines
+
+
 def human_text(
     event: dict[str, Any],
     route_primary: str,
@@ -84,14 +156,19 @@ def human_text(
     if recent_hit:
         markers += "\U0001f525 "  # 🔥
 
+    # Optional context lines; "" when absent -> byte-identical to pre-v1.1.0
+    context_block = "".join(line + "\n" for line in context_lines(event))
+
     return (
         "\U0001f4e1 SignalRadar Alert\n"  # 📡
         "\n"
         f"{markers}{question}\n"
-        f"{baseline}% \u2192 {current}% ({direction + ' ' if direction else ''}{abs_pp}pp)\n"
+        f"\U0001f3af {baseline}% \u2192 {current}% ({direction + ' ' if direction else ''}{abs_pp}pp)\n"  # 🎯
         f"\U0001f504 Baseline updated to {current}%\n"  # 🔄
+        f"{context_block}"
         "\n"
         f"\U0001f4c5 {ts_display}\n"  # 📅
+        "\n"
         "\u2014 Powered by SignalRadar"
     )
 
@@ -126,6 +203,7 @@ def human_text_multi(
     header = "\U0001f4e1 SignalRadar Alert\n\n"  # 📡 + blank line
     footer = (
         f"\n\n\U0001f4c5 {ts_display}\n"  # blank line + 📅
+        "\n"
         "\u2014 Powered by SignalRadar"
     )
 
@@ -169,9 +247,14 @@ def human_text_multi(
 
         part = (
             f"{num} {markers}{question}\n"
-            f"  {baseline}% \u2192 {current}% ({direction + ' ' if direction else ''}{abs_pp}pp)\n"
+            f"  \U0001f3af {baseline}% \u2192 {current}% ({direction + ' ' if direction else ''}{abs_pp}pp)\n"  # 🎯
             f"  \U0001f504 Baseline updated to {current}%"
         )
+        # Context appended BEFORE items.append so the 3500-char pagination
+        # below measures the final item length.
+        ctx = context_lines(event, indent="  ")
+        if ctx:
+            part += "\n" + "\n".join(ctx)
         items.append(part)
 
     # Join items with blank line, then split into messages at 3500 chars

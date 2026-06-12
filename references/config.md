@@ -72,10 +72,17 @@ signalradar.py config profile.timezone Asia/Shanghai
     "cleanup_after_expiry_days": 90
   },
   "source": {
-    "retries": 2
+    "retries": 2,
+    "trend_context": true
   }
 }
 ```
+
+`source.trend_context` (bool, default `true`): show display-only context lines in
+HIT alerts — a 7-day price trend (fetched from the CLOB price-history API only
+when a HIT fires) and 24h volume / liquidity (taken from the market response,
+zero extra requests). Set to `false` to disable both lines and restore minimal
+alerts. Context never affects threshold decisions, baselines, or the audit log.
 
 ## Watchlist Storage
 
@@ -163,7 +170,7 @@ A HIT is triggered when `|current - baseline| >= applicable_threshold`.
 |---------|--------|-------------|-------------|
 | `webhook` (recommended) | `https://...` | All platforms | HTTP POST to any webhook endpoint (Slack, Telegram Bot API, Discord, etc.). Zero platform dependency. |
 | `file` | `/path/to/alerts.jsonl` | All platforms | Appends alerts to local JSONL file. |
-| `openclaw` | `direct` | OpenClaw only | OpenClaw platform messaging. Not portable to other platforms. Background push requires reply route capture. |
+| `openclaw` | `direct` | OpenClaw only | OpenClaw platform messaging. Not portable to other platforms. Background push requires a captured reply route; default upstream reply-route env injection is still not implemented as of 2026-05-02 (`openclaw/openclaw#45778`). |
 
 Unsupported channels (for example `telegram`) are rejected by `config` validation and reported by `doctor`.
 不支持的通道（例如 `telegram`）会在 `config` 写入时被拒绝，并在 `doctor` 中报告。
@@ -261,7 +268,7 @@ The following config fields are no longer supported:
 
 ## Scheduling (Auto-Monitoring)
 
-After the first successful `add` or `onboard finalize`, SignalRadar attempts to auto-enable 10-minute background monitoring (v0.9.0). Prefers system `crontab` with `--push` (zero LLM cost, delivers via `openclaw message send`); falls back to `openclaw cron` when crontab is unavailable. **Route gate**: when `delivery.primary.channel == openclaw` + `crontab` driver + no captured reply route, the CLI refuses to arm and returns `route_missing` instead of silently enabling a cron job that cannot push. The actual monitoring frequency is managed by the `schedule` command, not by editing config values.
+After the first successful `add` or `onboard finalize`, SignalRadar attempts to auto-enable 10-minute background monitoring. Prefers system `crontab` (zero LLM cost; adds `--push` only for `openclaw` delivery); falls back to `openclaw cron` when crontab is unavailable. **Route gate** (v0.9.2+): when `delivery.primary.channel == openclaw` + `crontab` driver + no captured reply route, the CLI enables monitoring but returns a `route_missing` warning because checks can run while background chat delivery remains not ready. The actual monitoring frequency is managed by the `schedule` command, not by editing config values.
 
 On the first successful `add` or `onboard finalize`, if `profile.language` is still empty, SignalRadar persists the detected system-message language into the user config so background jobs keep using the same language later.
 

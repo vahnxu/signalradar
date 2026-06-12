@@ -275,6 +275,18 @@ Each hit row is produced by `decide_threshold.check_entry()` and currently carri
 - `reason`
 - `ts`
 
+Optional display-context fields (since v1.1.0, attached after the decision and
+absent when unavailable or when `source.trend_context` is `false`):
+
+- `trend` — `{start_pct, end_pct, low_pct, high_pct, points}` from the CLOB
+  7-day price history (fetched only when a HIT fires)
+- `volume_24h` — 24h volume in USD (from the market response, no extra request)
+- `liquidity` — order-book liquidity in USD (same source)
+- `clob_token_id` — CLOB token id used for the trend fetch
+
+These fields are display-only: they never affect decisions, baselines, or the
+audit log (which is written before enrichment).
+
 The event text shown to users is derived from these fields.
 
 ## Scheduling Semantics
@@ -298,8 +310,9 @@ The event text shown to users is derived from these fields.
 
 ## Reply Route Contract (v0.9.0)
 
-- OpenClaw injects `OPENCLAW_REPLY_CHANNEL` and `OPENCLAW_REPLY_TARGET` into foreground skill executions
-- SignalRadar persists these to `~/.signalradar/cache/openclaw_reply_route.json` on any CLI invocation
+- Contract expectation: if the host injects `OPENCLAW_REPLY_CHANNEL` and `OPENCLAW_REPLY_TARGET` into foreground skill executions, SignalRadar can capture the active reply route.
+- Current OpenClaw upstream status (2026-05-02): default foreground reply-route env injection is not implemented; track `openclaw/openclaw#45778`.
+- SignalRadar persists observed reply-route env vars to `~/.signalradar/cache/openclaw_reply_route.json` on any CLI invocation.
 - Background `--push` reads this file for explicit `openclaw message send` routing
 - If no route is stored, `--push` reports `route_missing` in delivery outcome, not silent success
 - Route persists indefinitely until overwritten by a newer foreground invocation

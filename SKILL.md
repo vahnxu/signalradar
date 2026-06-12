@@ -12,8 +12,7 @@ description: >-
 allowed-tools: "Bash(python3:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-author: vahnxu
-version: 1.0.8
+version: 1.1.0
 ---
 
 # SignalRadar
@@ -68,21 +67,21 @@ User must explicitly provide a Polymarket URL or choose from presets. Do NOT aut
 Agent must not edit `~/.signalradar/cache/`, `~/.signalradar/config/watchlist.json`, or baseline files using Write/Edit tools. Use CLI commands only. Normal runs automatically write these — that is expected behavior. (Note: the human user may hand-edit watchlist.json — the system tolerates it. This rule only restricts the Agent.)
 
 **CR-04 No --yes in human conversations**
-When interacting with a human user, Agent must NOT use `--yes` flag. The `--yes` flag is for automated/CI pipelines only (smoke tests, cron jobs). Let built-in confirmation handle user interaction.
+When interacting with a human user, Agent must NOT use `--yes` flag. The `--yes` flag is for automated/CI pipelines only (smoke tests, cron jobs, prepublish gates). Let built-in confirmation handle user interaction.
 
 **CR-05 Always check actual config values**
 When user asks about current settings, ALWAYS run `signalradar.py config` first. Do NOT guess or recall from memory. If a value is missing, report the default and state "this is the default value".
 
-**CR-06 Auto-enable monitoring after first add (crontab-first)**
-After first `add` or `onboard finalize`, background monitoring attempts to auto-enable (10-minute interval). Prefers system `crontab` (zero LLM cost). If crontab is unavailable, the CLI will report it and you can set up scheduling manually. Agent must NOT ask "should I set up cron?" and must NOT manually create jobs. Check `schedule --output json` and report honestly whether monitoring is active. Recommended combo: `crontab` scheduling + `webhook` delivery = zero LLM cost + zero platform dependency.
+**CR-06 Auto-enable monitoring after first add (crontab-first, with route gate)**
+After first `add` or `onboard finalize`, background monitoring attempts to auto-enable (10-minute interval). Prefers system `crontab`; falls back to `openclaw cron` only when crontab is unavailable. **Route gate**: when `delivery.primary.channel == openclaw` + `crontab` driver + no captured reply route, CLI enables monitoring but returns a `route_missing` warning because checks can run while background chat delivery is not ready. Agent must NOT ask "should I set up cron?" and must NOT manually create jobs. Check `delivery_status` in `schedule --output json` and report honestly whether monitoring and delivery are active. Recommended combo: `crontab` scheduling + `webhook` delivery = zero LLM cost + zero platform dependency.
 
 **CR-07 Use CLI to manage settings and schedule**
-Use `signalradar.py config [key] [value]` for settings (threshold, delivery channel, etc.). Use `signalradar.py schedule [N|disable] [--driver auto|crontab]` for monitoring frequency. Do NOT hand-edit JSON config files.
+Use `signalradar.py config [key] [value]` for settings (threshold, delivery channel, etc.). Use `signalradar.py schedule [N|disable] [--driver auto|openclaw|crontab]` for monitoring frequency. Do NOT hand-edit JSON config files.
 
 **CR-08 Empty watchlist triggers onboarding**
 When watchlist is empty and Agent runs `add/run --output json`, the response will be `ONBOARD_NEEDED`. Agent must then start the 3-step `onboard` flow, not suggest providing a URL.
 
-**CR-09 Onboarding is a 3-step flow + webhook guidance**
+**CR-09 Onboarding is a 3-step flow + webhook guidance (narrow-bridge principle)**
 In Bot/Agent mode, new user onboarding goes through the `onboard` subcommand in three steps:
 1. `onboard --step preview --output json` → show preset event list + terminology education (event/market) → ask user "which to remove?"
 2. `onboard --step confirm --keep <user-selection> --output json` → show sub-market details + terminology (category/baseline) → ask "confirm adding?"
@@ -91,13 +90,17 @@ Each step must wait for user reply before proceeding. Do NOT compress the 3 step
 
 **Webhook guidance (after finalize)**: `ONBOARD_COMPLETE` JSON contains `webhook_setup` field. When `webhook_setup.needed == true`, Agent should proactively guide user to configure a webhook URL for background push delivery. Provide Telegram Bot API / Slack / Discord URL examples. After user provides URL, run `config delivery webhook <URL>`.
 
-**CR-10 Verify actual status before claiming push readiness**
+**CR-10 Background push requires a captured reply route**
+Background `--push` on the `crontab` path requires a stored reply route (`~/.signalradar/cache/openclaw_reply_route.json`). If missing, do NOT claim background delivery is working. For `openclaw` delivery, check `schedule --output json` for `delivery_status` and `route_ready`.
+
+**CR-11 Verify actual status before claiming push readiness (channel-aware)**
 Before telling the user that background push is working, check `schedule --output json` → `delivery_status` field:
 - `"ready"` → push is working for the current delivery channel
 - `"webhook_url_missing"` → guide user to run `config delivery webhook <URL>`
+- `"route_missing"` → only relevant for openclaw channel; if user is on webhook, this field will not appear
 - `"file_target_missing"` → guide user to set file target
 
-Do NOT mix diagnostics across channels. The `delivery_status` field already accounts for the active channel.
+Do NOT mix diagnostics across channels. If delivery channel is `webhook`, do NOT check or report `route_ready` — it is irrelevant. The `delivery_status` field already accounts for the active channel.
 
 ## Known AI Mistakes (DO NOT repeat)
 
@@ -127,17 +130,33 @@ These mistakes actually occurred in production. Agent must avoid them.
 - WRONG: Write helper scripts outside the skill, such as `send_alerts_to_telegram.py`, to compensate for missing behavior
 - CORRECT: Keep monitoring, scheduling, and delivery inside the skill/runtime contract. If a gap is real, fix the skill itself instead of inventing side scripts
 
-**Error 7: Compressing 3-step onboarding into one execution**
+**Error 7: Treating clawhub update as a fresh install without checking data**
+- WRONG: After `clawhub update`, assume the user lost all data and treat the install as fresh without checking the runtime data directory
+- CORRECT: Read the actual user data directory first (`~/.signalradar/` or `SIGNALRADAR_DATA_DIR`) and only then decide whether migration or recovery is needed
+
+**Error 8: Claiming push readiness without checking webhook URL**
+- WRONG: "Background monitoring is active and alerts will be delivered!" (when webhook URL is empty)
+- CORRECT: Check `doctor --output json` → if `webhook_url_configured: false`, guide user to set up webhook URL
+
+**Error 9: Compressing 3-step onboarding into one execution**
 - WRONG: Run all 3 onboard steps in sequence without showing the user any results
 - CORRECT: Show each step's output to the user and wait for their reply before proceeding
 
-**Error 8: Claiming push readiness without checking webhook URL**
+**Error 10: Claiming push readiness without checking route**
+- WRONG: "Background push is all set!" (without checking route_ready)
+- CORRECT: Check `schedule --output json` → if `route_ready: false`, tell the user delivery is not yet armed
+
+**Error 11: Claiming push readiness without checking webhook URL**
 - WRONG: "Background monitoring is active and alerts will be delivered!" (when webhook URL is empty)
 - CORRECT: Check `doctor --output json` → if `webhook_url_configured: false`, guide user to set up webhook URL
 
 ## Quick Start
 
 ```bash
+# Install (OpenClaw users)
+clawhub install signalradar
+
+# Or clone directly
 git clone https://github.com/vahnxu/signalradar.git && cd signalradar
 
 # 1. Health check
@@ -211,12 +230,14 @@ Checks all active entries against Polymarket API. If probability change exceeds 
 - When multiple markets trigger in the same run, they are listed in the same notification grouped by event.
 - After a HIT is pushed, the baseline updates to the new probability value. The notification text includes "baseline updated to XX%."
 - `--dry-run` fetches and evaluates but writes no state.
+- `--output openclaw` is reserved for platform background runs. It emits `HEARTBEAT_OK` on quiet checks, user-ready HIT text on realtime alerts, and digest text when a scheduled digest is due and the primary delivery channel is `openclaw`.
 
 ### Manage schedule
 
 ```bash
 python3 scripts/signalradar.py schedule                        # Show current status
 python3 scripts/signalradar.py schedule 10                     # Auto driver (crontab-first)
+python3 scripts/signalradar.py schedule 10 --driver openclaw   # Force openclaw cron
 python3 scripts/signalradar.py schedule 10 --driver crontab    # Force system crontab
 python3 scripts/signalradar.py schedule disable                # Disable auto-monitoring
 ```
@@ -228,6 +249,7 @@ python3 scripts/signalradar.py digest
 python3 scripts/signalradar.py digest --dry-run
 python3 scripts/signalradar.py digest --force
 python3 scripts/signalradar.py digest --output json
+python3 scripts/signalradar.py digest --output openclaw --force
 ```
 
 `digest` compares the current monitored state with the previous digest snapshot, not with per-run baselines.
@@ -238,7 +260,7 @@ python3 scripts/signalradar.py digest --output json
 python3 scripts/signalradar.py config                          # Show all settings
 python3 scripts/signalradar.py config check_interval_minutes   # Show one setting
 python3 scripts/signalradar.py config threshold.abs_pp 8.0     # Change threshold
-python3 scripts/signalradar.py config delivery webhook <url>   # Set webhook channel + target in one command
+python3 scripts/signalradar.py config delivery webhook <url>   # Shortcut: set webhook channel + target in one command
 ```
 
 ### Health check
@@ -282,6 +304,9 @@ Returns `{"status": "HEALTHY"}` if Python version and network connectivity are O
 
 When presenting a HIT to the user:
 > **GPT-5 released by June 30, 2026?**: 32% → 41% (+9pp), threshold 5pp crossed. Baseline updated to 41%.
+> 📈 7d: 28% → 41% (low 26% · high 43%) · 💰 24h vol $12.7k · liq $690k
+
+Since v1.1.0, HIT alerts may include display-only context: a 7-day price trend (`trend` field, fetched from the CLOB price-history API only when a HIT fires) and 24h volume / liquidity (`volume_24h` / `liquidity` fields, taken from the market response with zero extra requests). All fields are optional — when data is unavailable the lines are omitted entirely. Set `source.trend_context` to `false` to disable. Context never affects threshold decisions, baselines, or the audit log.
 
 ### Same-event grouped HIT
 
@@ -307,7 +332,7 @@ All settings have sensible defaults. Runtime configuration lives at `~/.signalra
 | `threshold.abs_pp` | 5.0 | Global threshold in percentage points (min: 0.1) |
 | `threshold.per_category_abs_pp` | `{}` | Per-category override, e.g. `{"AI": 4.0}` |
 | `threshold.per_entry_abs_pp` | `{}` | Per-entry override, key = entry_id |
-| `delivery.primary.channel` | `webhook` | `webhook` (recommended), `file`, or `openclaw` |
+| `delivery.primary.channel` | `webhook` | `webhook` (recommended), `openclaw`, or `file` |
 | `delivery.primary.target` | `""` | Webhook URL, file path, or `direct` |
 | `digest.frequency` | `weekly` | `off` / `daily` / `weekly` / `biweekly` |
 | `digest.day_of_week` | `monday` | Weekly / biweekly digest weekday |
@@ -320,8 +345,8 @@ All settings have sensible defaults. Runtime configuration lives at `~/.signalra
 ### Delivery adapters
 
 - **`webhook`** (recommended) — HTTP POST to external endpoint. Set `target` to webhook URL. Works with Slack, Telegram Bot API, Discord, or any HTTP endpoint. Fully portable across all platforms (OpenClaw, Claude Code, standalone). When paired with `crontab` scheduling driver, delivers notifications with zero LLM cost and zero platform dependency.
-- **`file`** — Appends alerts to a local JSONL file. Set `target` to file path. Portable across all platforms.
-- **`openclaw`** (OpenClaw-only) — OpenClaw platform integration. Not portable to other platforms.
+- **`file`** — appends alerts to a local JSONL file. Set `target` to file path. Portable across all platforms.
+- **`openclaw`** (OpenClaw-only) — OpenClaw platform integration. In interactive chat, Agent reply IS the notification; background delivery via `openclaw cron` announce. Not portable to other platforms.
 
 When user asks to set up notifications, recommend `webhook` first (portable, zero platform dependency). Explain that `openclaw` works automatically in OpenClaw interactive chat but is not portable.
 
@@ -332,7 +357,7 @@ For full configuration reference, see `references/config.md`.
 SignalRadar implements digest reporting. The digest uses the same delivery channel family as HIT alerts, but it compares against the previous digest snapshot instead of the per-run alert baseline.
 
 - Includes both entries that already triggered realtime HIT alerts this period and entries that never crossed the realtime threshold but still changed net-over-period.
-- Human-readable digest groups large multi-market events by event, shows only top movers, and avoids dumping every market into a single message.
+- Human-readable digest groups large multi-market events by event, shows only top movers, and avoids dumping every market into Telegram.
 - Full detail remains available through `digest --output json`.
 - Scheduled digest checks piggyback on normal monitoring runs; SignalRadar does not create a second standalone scheduler just for digest.
 - The first automatic digest after setup/update is bootstrap-only: SignalRadar writes the initial digest snapshot silently and starts user-facing digest delivery from the next report cycle. Use `digest --force` if you want an immediate preview now.
@@ -353,7 +378,7 @@ SignalRadar implements digest reporting. The digest uses the same delivery chann
 
 ## Scheduling
 
-SignalRadar attempts to auto-enable 10-minute background monitoring after the first successful `add` or `onboard finalize`. The default driver is system `crontab` with `--push` (zero LLM cost).
+SignalRadar attempts to auto-enable 10-minute background monitoring after the first successful `add` or `onboard finalize`. The default driver is system `crontab` (zero LLM cost; `--push` only for `openclaw` delivery); falls back to `openclaw cron` only when crontab is unavailable. **Route gate**: when `delivery.primary.channel == openclaw` + `crontab` driver + no captured reply route, the CLI enables monitoring but reports `route_missing`; do not claim background chat delivery is ready until `delivery_status` is `ready`.
 
 On the first successful `add`, if `profile.language` is still empty, SignalRadar snapshots the detected system-message language into user config so background cron notifications remain stable.
 
@@ -412,6 +437,7 @@ NEVER output raw status codes (NO_REPLY, HIT, BASELINE, SILENT, ERROR) directly 
 - No modes exist. Just run `signalradar.py run`.
 - Do not mention Notion integration (removed in v0.5.0).
 - Casual chat ("好的"/"OK"/"没事") is NOT a command. Do NOT trigger any signalradar operation.
+- Do NOT change delivery channel unless user explicitly asks. Recommend `webhook` first for portable background delivery.
 
 ### Runtime Output vs Documentation Conflicts
 
@@ -419,7 +445,7 @@ When `schedule` or `doctor` output appears to contradict SKILL.md's recommended 
 - Trust SKILL.md for *which channel to use* (webhook is recommended for portability)
 - Trust runtime output for *current operational status* of the active channel only
 - Do NOT suggest switching channels based on a status field that belongs to a different channel
-- Example: if delivery is `webhook` and `schedule` shows a field that belongs to a different channel — it is irrelevant to the user's setup, not a problem to fix
+- Example: if delivery is `webhook` and `schedule` shows something about `route_missing` — this is irrelevant to the user's setup, not a problem to fix
 
 ### Language Handling
 

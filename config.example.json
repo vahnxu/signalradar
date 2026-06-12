@@ -27,6 +27,7 @@
     "cleanup_after_expiry_days": 90
   },
   "source": {
-    "retries": 2
+    "retries": 2,
+    "trend_context": true
   }
 }
