@@ -246,6 +246,12 @@ If you use [OpenClaw](https://clawhub.com), install directly from the marketplac
 clawhub install signalradar
 ```
 
+## MCP Server (for AI Agents) / MCP 服务器（面向 AI Agent）
+
+An optional read-only [MCP](https://modelcontextprotocol.io) server lives in [`mcp/`](mcp/), exposing `search_markets`, `get_market`, `get_price_trend`, and `check_threshold` to any MCP client (Claude Code/Desktop, Cursor, Windsurf, etc.). The main skill stays zero-dependency; the `mcp` dependency is isolated to that folder. See [`mcp/README.md`](mcp/README.md).
+
+可选的只读 [MCP](https://modelcontextprotocol.io) 服务器位于 [`mcp/`](mcp/)，向任何 MCP 客户端（Claude Code/Desktop、Cursor、Windsurf 等）暴露市场搜索、快照、7 天趋势和阈值预览四个工具。主体 skill 保持零依赖，`mcp` 依赖隔离在该目录内。详见 [`mcp/README.md`](mcp/README.md)。
+
 ## Requirements / 运行要求
 
 - Python 3.9+
