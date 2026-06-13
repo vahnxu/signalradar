@@ -2,7 +2,7 @@
 
 > 监控 Polymarket 预测市场概率变化，超过阈值时推送通知。
 
-[English](README.md) | 简体中文
+### [English](README.md) | 简体中文
 
 你通过提供 Polymarket 链接来精确选择要监控的市场。零依赖（仅使用 Python 标准库）。
 

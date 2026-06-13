@@ -2,7 +2,7 @@
 
 > Monitor Polymarket prediction markets for probability changes. Get alerts when thresholds are crossed.
 
-English | [简体中文](README.zh-CN.md)
+### English | [简体中文](README.zh-CN.md)
 
 You choose exactly which markets to monitor by providing Polymarket URLs. Zero dependencies (Python stdlib only).
 
