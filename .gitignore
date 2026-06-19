@@ -20,3 +20,15 @@ scripts/sr_prepublish_gate.py
 scripts/sr_smoke_test.py
 RELEASE_FINGERPRINT.json
 TODO.md
+
+# Local-only
+AGENTS.md
+GEMINI.md
+CLAUDE.md
+MEMORY.md
+WORKSPACE_CONTEXT.md
+governance.yaml
+.clawhubignore
+.github/
+docs/
+ops/
