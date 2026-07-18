@@ -20,6 +20,8 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from discover_entries import (  # noqa: E402
+    DISCOVER_DEFAULT_LIMIT,
+    discover_events,
     fetch_market_current_result,
     fetch_price_history_points,
     parse_polymarket_url,
@@ -122,6 +124,27 @@ def search_markets(query: str) -> dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001 - MCP tools must return structured errors.
         return _exception_error(exc, "Could not resolve Polymarket markets")
+
+
+@mcp.tool()
+def discover_markets(query: str = "", limit: int = DISCOVER_DEFAULT_LIMIT) -> dict[str, Any]:
+    """Discover open Polymarket events by keyword search or trending browse.
+
+    Empty query returns trending events (24h volume desc). Read-only and
+    stateless: touches no SignalRadar watchlist, baselines, or config. Each
+    result includes a polymarket.com URL that can be fed to SignalRadar's
+    `add` flow.
+    """
+    try:
+        results, error = discover_events(query=query, limit=limit)
+        if error:
+            return _error(error.get("code", SR_SOURCE_UNAVAILABLE), error.get("message", "Discover failed."))
+        return {
+            "query": (query or "").strip(),
+            "results": results or [],
+        }
+    except Exception as exc:  # noqa: BLE001 - MCP tools must return structured errors.
+        return _exception_error(exc, "Could not discover Polymarket markets")
 
 
 @mcp.tool()

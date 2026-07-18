@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """SignalRadar unified CLI entrypoint.
 
-Commands: doctor, add, list, show, remove, run, config, schedule, digest, onboard
+Commands: doctor, discover, add, list, show, remove, run, config, schedule, digest, onboard
 Single source of truth: ~/.signalradar/config/watchlist.json
 """
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.3.0"
 
 import argparse
 import json
@@ -52,7 +52,10 @@ from config_utils import (
 )
 from decide_threshold import check_entry, safe_name
 from discover_entries import (
+    DISCOVER_DEFAULT_LIMIT,
+    DISCOVER_MAX_LIMIT,
     ONBOARDING_URLS,
+    discover_events,
     extract_probability,
     fetch_market_current_result,
     fetch_price_history_points,
@@ -2651,6 +2654,90 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cmd_discover (v1.3.0) — read-only, stateless, user-initiated only
+# ---------------------------------------------------------------------------
+
+def _format_discover_money(value: Any) -> str | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if result != result or result in (float("inf"), float("-inf")):
+        return None
+    return f"${result:,.0f}"
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    query = str(getattr(args, "query", "") or "").strip()
+    results, error = discover_events(query=query, limit=args.limit)
+
+    request_id = str(uuid.uuid4())
+    run_ts = _utc_now()
+
+    if error:
+        if args.output == "json":
+            _json_print({
+                "status": "ERROR",
+                "request_id": request_id,
+                "ts": run_ts,
+                "query": query,
+                "results": [],
+                "errors": [error],
+            })
+        else:
+            print(f"Could not discover markets: {error.get('message', 'Unknown error')} ({error.get('code', 'SR_SOURCE_UNAVAILABLE')})")
+        return 1
+
+    results = results or []
+    if args.output == "json":
+        _json_print({
+            "status": "OK",
+            "request_id": request_id,
+            "ts": run_ts,
+            "query": query,
+            "results": results,
+            "errors": [],
+        })
+        return 0
+
+    if not results:
+        if query:
+            print(f"No open markets matched '{query}'.")
+            print("Tip: try broader English keywords, or run 'discover' with no query for trending markets.")
+        else:
+            print("No trending markets returned by Polymarket API right now.")
+        return 0
+
+    label = f"'{query}'" if query else "trending"
+    print(f"Found {len(results)} open market event(s) for {label}:\n")
+    for index, item in enumerate(results, start=1):
+        print(f"  {index}. {item.get('title', '?')}")
+        context_bits: list[str] = []
+        top_markets = item.get("top_markets") or []
+        if len(top_markets) == 1 and item.get("market_count", 0) <= 1:
+            context_bits.append(f"{top_markets[0].get('probability')}% Yes")
+        vol = _format_discover_money(item.get("volume_24h"))
+        if vol:
+            context_bits.append(f"24h vol {vol}")
+        liq = _format_discover_money(item.get("liquidity"))
+        if liq:
+            context_bits.append(f"liquidity {liq}")
+        if item.get("end_date"):
+            context_bits.append(f"ends {item.get('end_date')}")
+        if context_bits:
+            print(f"     {' · '.join(context_bits)}")
+        market_count = item.get("market_count") or 0
+        if market_count > 1 and top_markets:
+            top = top_markets[0]
+            print(f"     {market_count} markets (top: {top.get('question', '?')} — {top.get('probability')}%)")
+        print(f"     URL: {item.get('url', '')}")
+        print()
+
+    print("Tip: add one to monitoring with: signalradar.py add <url>")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # cmd_digest
 # ---------------------------------------------------------------------------
 
@@ -3808,7 +3895,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
     Moves global flags that appear before the subcommand to after it,
     so argparse subparsers can parse them correctly.
     """
-    commands = {"doctor", "add", "list", "show", "remove", "run", "config", "schedule", "digest"}
+    commands = {"doctor", "discover", "add", "list", "show", "remove", "run", "config", "schedule", "digest", "onboard"}
     # Find subcommand position
     cmd_idx = None
     for i, arg in enumerate(argv):
@@ -3864,6 +3951,14 @@ def main() -> int:
     p_doc = sub.add_parser("doctor", help="Check runtime health")
     p_doc.add_argument("--output", choices=["text", "json"], default="text")
     p_doc.add_argument("--config", default="", help="Path to config JSON")
+
+    # discover
+    p_disc = sub.add_parser("discover", help="Discover open markets by keyword or trending (read-only)")
+    p_disc.add_argument("query", nargs="?", default="", help="Keywords (English), or omit for trending markets")
+    p_disc.add_argument("--limit", type=int, default=DISCOVER_DEFAULT_LIMIT,
+                        help=f"Max events to return (1-{DISCOVER_MAX_LIMIT}, default {DISCOVER_DEFAULT_LIMIT})")
+    p_disc.add_argument("--output", choices=["text", "json"], default="text")
+    p_disc.add_argument("--config", default="", help="Path to config JSON")
 
     # add
     p_add = sub.add_parser("add", help="Add market(s) by Polymarket URL")
@@ -3931,12 +4026,17 @@ def main() -> int:
     p_run.add_argument("--config", default="", help="Path to config JSON")
 
     args = parser.parse_args(_normalize_argv(sys.argv[1:]))
-    _emit_startup_notices(args)
+    # discover is contractually read-only/stateless: skip user-data bootstrap
+    # (dir creation + reply-route capture) so it leaves zero footprint.
+    if args.command != "discover":
+        _emit_startup_notices(args)
 
     # Dispatch
     cmd = args.command
     if cmd == "doctor":
         return cmd_doctor(args)
+    elif cmd == "discover":
+        return cmd_discover(args)
     elif cmd == "add":
         return cmd_add(args)
     elif cmd == "list":

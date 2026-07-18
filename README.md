@@ -4,7 +4,7 @@
 
 ### English | [简体中文](README.zh-CN.md)
 
-You choose exactly which markets to monitor by providing Polymarket URLs. Zero dependencies (Python stdlib only).
+You choose exactly which markets to monitor — paste Polymarket URLs, or find them right from the CLI with `discover` (keyword search / trending browse, v1.3.0). Zero dependencies (Python stdlib only).
 
 There are two ways to use SignalRadar:
 
@@ -17,6 +17,7 @@ An optional read-only [MCP](https://modelcontextprotocol.io) server lives in [`m
 
 | Tool | What it does |
 |------|--------------|
+| `discover_markets` | Find open markets by keyword, or browse trending (24h volume desc) |
 | `search_markets` | Resolve a Polymarket event by URL, slug, or keywords |
 | `get_market` | Current snapshot: probability, 24h volume, liquidity, status |
 | `get_price_trend` | 7-day price trend stats plus sampled history points |
@@ -61,7 +62,7 @@ User adds URL  --->  SignalRadar  --->  Delivery Adapter
                      threshold check
 ```
 
-1. You add markets by URL (`add`)
+1. You add markets by URL (`add`) — or find candidates first with `discover "<keywords>"` (read-only)
 2. SignalRadar fetches live probability from Polymarket API
 3. Compares against recorded baseline
 4. Sends alert when change exceeds threshold (default: 5 percentage points)
@@ -70,6 +71,10 @@ User adds URL  --->  SignalRadar  --->  Delivery Adapter
 ## Commands
 
 ```bash
+# Discover markets by keyword or trending (read-only, v1.3.0)
+python3 scripts/signalradar.py discover                          # Trending
+python3 scripts/signalradar.py discover "fed rate cut" --limit 5 # Keyword search
+
 # First-time setup (bot mode, 3-step)
 python3 scripts/signalradar.py onboard --step preview --output json
 python3 scripts/signalradar.py onboard --step confirm --keep 1,2,3 --output json

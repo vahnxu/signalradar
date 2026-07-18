@@ -24,6 +24,7 @@ claude mcp add signalradar -- python3 /path/to/signalradar/mcp/server.py
 
 | Tool | Arguments | Returns |
 |------|-----------|---------|
+| `discover_markets` | `query: str = ""`, `limit: int = 10` | Open events matching keywords (or trending when query is empty), ranked by 24h volume: `title`, `slug`, `url`, `volume_24h`, `liquidity`, `end_date`, `market_count`, `top_markets` (≤3 with probabilities). Limit caps at 25. |
 | `search_markets` | `query: str` | Polymarket event title, event id, slug, and normalized market list with `id`, `question`, `probability`, `status`, `end_date`, `url`. |
 | `get_market` | `market_id: str` | Current market snapshot with probability, 24h volume, liquidity, status, end date, and URL. |
 | `get_price_trend` | `market_id: str` | 7-day CLOB trend summary plus capped raw point sample. |

@@ -6,13 +6,15 @@ description: >-
   "check prediction markets", "list my monitors", "remove a monitor",
   "track market probabilities", "run market check", "check schedule status",
   "change threshold", "change check frequency", "health check",
+  "find markets about X", "search prediction markets", "trending markets",
+  "what is the market pricing for X",
   or sends a polymarket.com URL asking to add, check, or learn about a market.
   When user shares a polymarket.com URL without explicit intent, use `show` to display market info — do NOT auto-add.
   Do NOT use for stock/crypto trading signals, sports betting, price prediction models, or general financial analysis.
 allowed-tools: "Bash(python3:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-version: 1.1.0
+version: 1.3.0
 ---
 
 # SignalRadar
@@ -41,6 +43,8 @@ After receiving a user message, pick a command from this table. **When no intent
 |------------------------|----------------|---------|
 | "看看我监控了啥" / "我的列表" / "在追踪哪些" | "list my monitors" / "what am I tracking" | `list` |
 | "有啥变化吗" / "检查一下" / "跑一下" | "any changes?" / "run a check" | `run` |
+| "有什么热门市场" / "现在大家在赌什么" | "trending markets" / "what's hot" | `discover --output json` |
+| "帮我找 X 相关的市场" / "X 的市场定价多少" | "find markets about X" / "market odds for X" | `discover "<english keywords>" --output json`（中文意图先译成英文关键词） |
 | "帮我加一下 [URL]" / "监控这个链接" | "add this market" / "monitor this" | `add <url>` |
 | "帮我加几个市场" / "想监控但没链接" | "add markets" (no URL) | `add` (no arg) → empty watchlist returns `ONBOARD_NEEDED`, Agent starts `onboard` flow |
 | "删掉第 N 个" / "不监控这个了" | "remove #N" / "stop monitoring" | `remove <N>` |
@@ -61,7 +65,7 @@ After receiving a user message, pick a command from this table. **When no intent
 If event has multiple markets (>3), the CLI force-prints count, type summary, and market list before waiting for confirmation; `--yes` cannot skip this. Agent must still explain the count and types before running `add`.
 
 **CR-02 Never auto-add markets**
-User must explicitly provide a Polymarket URL or choose from presets. Do NOT auto-add.
+User must explicitly provide a Polymarket URL, choose from presets, or pick from `discover` results by number. `discover` is read-only — after the user picks, Agent maps the number back to the result's `url` field and runs the normal `add <url>` flow (with its built-in confirmation). Do NOT auto-add, and do NOT add anything the user did not explicitly pick.
 
 **CR-03 Agent must not directly edit data files**
 Agent must not edit `~/.signalradar/cache/`, `~/.signalradar/config/watchlist.json`, or baseline files using Write/Edit tools. Use CLI commands only. Normal runs automatically write these — that is expected behavior. (Note: the human user may hand-edit watchlist.json — the system tolerates it. This rule only restricts the Agent.)
@@ -177,6 +181,20 @@ python3 scripts/signalradar.py run --dry-run --output json
 
 ## Common Tasks
 
+### Discover markets (v1.3.0)
+
+```bash
+python3 scripts/signalradar.py discover                          # Trending (24h volume desc)
+python3 scripts/signalradar.py discover "fed rate cut" --limit 5 # Keyword search
+python3 scripts/signalradar.py discover "world cup" --output json
+```
+
+Read-only and stateless: touches no watchlist/baselines/config, and must never be scheduled (user-initiated only). Results include each event's `url` — after the user picks by number, run the normal `add <url>` flow (CR-02).
+
+- Keywords must be English (Polymarket content is English). For Chinese user intent, translate to English keywords first (e.g., "美联储降息" → "fed rate cut").
+- `--limit` caps results (1-25, default 10). Results are ranked by 24h volume.
+- Empty results are normal for niche keywords — suggest broader terms or trending.
+
 ### Add a market
 
 ```bash
@@ -291,8 +309,8 @@ Returns `{"status": "HEALTHY"}` if Python version and network connectivity are O
       "entry_id": "polymarket:12345:gpt5-release-june:evt_67890",
       "slug": "gpt5-release-june",
       "question": "GPT-5 released by June 30, 2026?",
-      "current": 0.41,
-      "baseline": 0.32,
+      "current": 41.0,
+      "baseline": 32.0,
       "abs_pp": 9.0,
       "confidence": "high",
       "reason": "abs_pp 9.0 >= threshold 5.0"
@@ -431,7 +449,7 @@ NEVER output raw status codes (NO_REPLY, HIT, BASELINE, SILENT, ERROR) directly 
 
 ### Prohibited Actions
 
-- Do not auto-discover or suggest markets to add. Wait for user.
+- Do not add markets the user did not explicitly pick. Run `discover` only when the user asks to find/browse markets — never spontaneously, and never chain discover results into `add` without the user picking by number (CR-02).
 - Do not create cron jobs outside of `schedule` command.
 - Agent must not manually edit data files (see CR-03).
 - No modes exist. Just run `signalradar.py run`.

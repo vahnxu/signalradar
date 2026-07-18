@@ -4,7 +4,7 @@
 
 ### [English](README.md) | 简体中文
 
-你通过提供 Polymarket 链接来精确选择要监控的市场。零依赖（仅使用 Python 标准库）。
+你来精确选择要监控的市场——粘贴 Polymarket 链接，或直接用 CLI 的 `discover` 命令找市场（关键词搜索 / 热门浏览，v1.3.0）。零依赖（仅使用 Python 标准库）。
 
 SignalRadar 有两种使用方式：
 
@@ -17,6 +17,7 @@ SignalRadar 有两种使用方式：
 
 | 工具 | 功能 |
 |------|------|
+| `discover_markets` | 按关键词查找进行中的市场，或浏览热门市场（按 24h 交易量降序） |
 | `search_markets` | 按 URL、slug 或关键词解析 Polymarket 事件 |
 | `get_market` | 当前快照：概率、24h 成交量、流动性、状态 |
 | `get_price_trend` | 7 天价格趋势统计 + 采样历史点 |
@@ -61,7 +62,7 @@ python3 scripts/signalradar.py run --dry-run --output json
                     阈值检查
 ```
 
-1. 通过链接添加市场（`add`）
+1. 通过链接添加市场（`add`）——也可以先用 `discover "<关键词>"`（只读）找候选市场
 2. SignalRadar 从 Polymarket API 获取实时概率
 3. 与记录的基线对比
 4. 变化超过阈值时发送警报（默认：5 个百分点）
@@ -70,6 +71,10 @@ python3 scripts/signalradar.py run --dry-run --output json
 ## 命令
 
 ```bash
+# 发现市场：关键词搜索或浏览热门（只读，v1.3.0）
+python3 scripts/signalradar.py discover                          # 热门市场
+python3 scripts/signalradar.py discover "fed rate cut" --limit 5 # 关键词搜索（英文关键词）
+
 # 首次设置（bot 模式，3 步）
 python3 scripts/signalradar.py onboard --step preview --output json
 python3 scripts/signalradar.py onboard --step confirm --keep 1,2,3 --output json
