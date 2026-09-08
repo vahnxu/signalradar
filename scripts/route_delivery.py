@@ -460,6 +460,22 @@ def _route_parts(route: str) -> tuple[str, str]:
     return left.strip().lower(), right.strip()
 
 
+def envelope_route_block(primary: str, fallback: list[str]) -> dict[str, Any]:
+    """Build the envelope's `route` block — always masked.
+
+    Every envelope is a dual-role object: it is returned to the caller (so it
+    reaches --output json and cron.log) AND it is the body POSTed to the
+    webhook. An unmasked fallback route therefore ships the fallback
+    endpoint's credential to the primary endpoint.
+
+    This exists as a function because masking the two builders in this module
+    individually was an enumeration, and it missed a third construction site
+    in signalradar.py (the multi-HIT branch). Construct the block here or the
+    next builder someone adds will leak too.
+    """
+    return {"primary": mask_route(primary), "fallback": [mask_route(r) for r in fallback]}
+
+
 def deliver_envelope(envelope: dict[str, Any], route: str, timeout_sec: int) -> dict[str, Any]:
     channel, target = _route_parts(route)
     if channel == "openclaw":
@@ -565,12 +581,7 @@ def deliver_hit(
         "request_id": event.get("request_id"),
         "idempotency_key": f"sr:{event.get('entry_id')}:{event.get('ts')}",
         "severity": sev,
-        # Masked deliberately. This envelope is (a) returned to the caller and
-        # thus reaches --output json and cron.log, and (b) POSTed verbatim as
-        # the webhook body — so an unmasked fallback route would ship the
-        # FALLBACK endpoint's credential to the PRIMARY endpoint. Delivery is
-        # unaffected: attempt_delivery() uses the separate `routes` list below.
-        "route": {"primary": mask_route(route_primary), "fallback": [mask_route(r) for r in fallback_routes]},
+        "route": envelope_route_block(route_primary, fallback_routes),
         "human_text": human_text(event, route_primary, config, threshold=threshold, recent_hit=recent_hit),
         "machine_payload": {"signal_event": event},
         "ts": now,
@@ -619,12 +630,7 @@ def deliver_digest(
         "request_id": report_key,
         "idempotency_key": f"sr:digest:{report_key}",
         "severity": "P2",
-        # Masked deliberately. This envelope is (a) returned to the caller and
-        # thus reaches --output json and cron.log, and (b) POSTed verbatim as
-        # the webhook body — so an unmasked fallback route would ship the
-        # FALLBACK endpoint's credential to the PRIMARY endpoint. Delivery is
-        # unaffected: attempt_delivery() uses the separate `routes` list below.
-        "route": {"primary": mask_route(route_primary), "fallback": [mask_route(r) for r in fallback_routes]},
+        "route": envelope_route_block(route_primary, fallback_routes),
         "human_text": str(report.get("human_text", "")),
         "machine_payload": {"digest_report": report.get("machine_payload", report)},
         "ts": now,
@@ -684,7 +690,7 @@ def main() -> int:
                 "request_id": event.get("request_id"),
                 "idempotency_key": f"sr:{event.get('entry_id')}:{event.get('ts')}",
                 "severity": sev,
-                "route": {"primary": args.route_primary, "fallback": args.route_fallback},
+                "route": envelope_route_block(args.route_primary, list(args.route_fallback)),
                 "human_text": human_text(event, args.route_primary),
                 "machine_payload": {"signal_event": event},
                 "ts": now,
@@ -692,7 +698,7 @@ def main() -> int:
             envelopes.append(envelope)
 
             if args.dry_run:
-                results.append({"request_id": envelope.get("request_id"), "ok": True, "status": "dry_run", "route": args.route_primary, "attempts": []})
+                results.append({"request_id": envelope.get("request_id"), "ok": True, "status": "dry_run", "route": mask_route(args.route_primary), "attempts": []})
             else:
                 outcome = attempt_delivery(envelope, [args.route_primary] + list(args.route_fallback), timeout_sec=args.timeout_sec)
                 results.append({"request_id": envelope.get("request_id"), **outcome})

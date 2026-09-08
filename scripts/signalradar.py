@@ -3346,14 +3346,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                     for fb in delivery.get("fallback", [])
                     if isinstance(fb, dict)
                 ]
-                from route_delivery import attempt_delivery, utc_now as _utc
+                from route_delivery import attempt_delivery, envelope_route_block, utc_now as _utc
                 envelope = {
                     "schema_version": "1.1.0",
                     "delivery_id": f"del:multi:{request_id}",
                     "request_id": request_id,
                     "idempotency_key": f"sr:multi:{request_id}:{hash(msg) % 100000}",
                     "severity": severity_for_event(sorted_hits[0]),
-                    "route": {"primary": route_primary, "fallback": fallback_routes},
+                    "route": envelope_route_block(route_primary, fallback_routes),
                     "human_text": msg,
                     "machine_payload": {"hit_count": len(sorted_hits)},
                     "ts": _utc().isoformat().replace("+00:00", "Z"),
