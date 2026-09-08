@@ -14,7 +14,7 @@ description: >-
 allowed-tools: "Bash(python3 scripts/signalradar.py:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-version: 1.5.4
+version: 1.5.5
 ---
 
 # SignalRadar
@@ -47,6 +47,8 @@ python3 scripts/signalradar.py config schedule.auto_enable false  # never ask, n
 Set `schedule.auto_enable false` to refuse it permanently (the agent stops asking); `true` allows it without asking.
 
 **Credential handling:** a webhook URL *is* a bearer credential — a Telegram bot token or Slack webhook path is embedded in it. SignalRadar never prints one in full, in any output path: delivery results, the alert envelope itself, `config`, and `doctor` all emit a masked form plus a stable fingerprint (`https://api.telegram.org/*** (id:7c08e3b4)`) so two webhooks stay distinguishable. Set `SIGNALRADAR_REVEAL_SECRETS=1` to see real values. The envelope matters here: it is also the body POSTed to your webhook, so masking it is what stops a configured **fallback** endpoint's credential from being shipped to your **primary** endpoint.
+
+**HTTPS required.** A webhook URL is itself a bearer credential, and the alert body carries the market questions and probabilities being watched. Both would be readable by anything on the path over plain HTTP, so `http://` targets are refused — at delivery time and when setting the value. Set `SIGNALRADAR_ALLOW_INSECURE_WEBHOOK=1` if you accept that trade-off on a network you control.
 
 **Destination guards.** A webhook target must resolve to a public address; loopback, private, link-local, reserved and multicast are refused, including the cloud metadata endpoint. The check is not just a pre-flight lookup — **the connection is pinned to the address that passed it**, so a name that answers differently the second time cannot redirect the request, and the peer address is re-checked once the socket is up. `Host` and TLS certificate verification still use the original hostname, so certificate checking is not weakened. Every redirect hop is revalidated the same way. Override with `SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1` if you deliver to your own LAN.
 

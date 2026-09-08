@@ -187,6 +187,8 @@ signalradar.py config schedule.auto_enable false   # set this BEFORE your first 
 
 **Your webhook URL is a bearer credential** — a Telegram bot token or Slack webhook path is embedded in it. It is never printed in full anywhere: delivery results, the alert envelope, `config` and `doctor` all show a masked form with a stable fingerprint (`https://api.telegram.org/*** (id:7c08e3b4)`). Set `SIGNALRADAR_REVEAL_SECRETS=1` if you need the real value.
 
+**HTTPS required.** The webhook URL is itself a credential and the alert body carries what you monitor, so `http://` targets are refused unless you set `SIGNALRADAR_ALLOW_INSECURE_WEBHOOK=1`.
+
 **Destination guards.** A webhook target must resolve to a public address, and the connection is pinned to the address that passed the check, so DNS answers cannot change under it. Certificate verification still uses the original hostname. Every redirect hop is revalidated. (Behind an HTTP proxy the proxy is the peer by design, so pinning cannot cover the final hop — see SKILL.md.) Override with `SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1` for a LAN webhook.
 
 **Scoped writes and retention.** The `file` adapter writes only inside the data directory unless you set `SIGNALRADAR_ALLOW_ANY_FILE_TARGET=1`. The stored OpenClaw reply route is `0600`, expires after 30 days, and can be deleted with `signalradar.py schedule clear-route`. `profile.timezone` defaults to your machine's timezone rather than a fixed one.

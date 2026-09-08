@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.5.4"
+__version__ = "1.5.5"
 
 import argparse
 import json
@@ -2489,8 +2489,18 @@ def cmd_config(args: argparse.Namespace) -> int:
         val = str(args.value).strip()
         if val.startswith("webhook ") or val.startswith("webhook\t"):
             url = val.split(None, 1)[1].strip()
-            if not url.startswith("http://") and not url.startswith("https://"):
-                print("Error: Webhook URL must start with http:// or https://")
+            low = url.lower()
+            if not low.startswith(("http://", "https://")):
+                print("Error: Webhook URL must start with https://")
+                return 1
+            if low.startswith("http://") and os.environ.get(
+                "SIGNALRADAR_ALLOW_INSECURE_WEBHOOK", ""
+            ).strip() not in {"1", "true", "yes"}:
+                print(
+                    "Error: plain HTTP webhook refused. The URL is itself a credential and\n"
+                    "       alerts would travel in the clear. Use https://, or set\n"
+                    "       SIGNALRADAR_ALLOW_INSECURE_WEBHOOK=1 if you accept that."
+                )
                 return 1
             set_nested_value(user_cfg, "delivery.primary.channel", "webhook")
             set_nested_value(user_cfg, "delivery.primary.target", url)

@@ -234,10 +234,25 @@ def _allow_private_webhook() -> bool:
     return os.environ.get("SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK", "").strip() in {"1", "true", "yes"}
 
 
+def _allow_insecure_webhook() -> bool:
+    return os.environ.get("SIGNALRADAR_ALLOW_INSECURE_WEBHOOK", "").strip() in {"1", "true", "yes"}
+
+
 def _webhook_target_error(target: str) -> str:
     """Return an error string if the webhook target is unsafe, else ''."""
-    if not target.lower().startswith(("http://", "https://")):
-        return "invalid webhook url (must start with http:// or https://)"
+    lowered = target.lower()
+    if not lowered.startswith(("http://", "https://")):
+        return "invalid webhook url (must start with https://)"
+    if lowered.startswith("http://") and not _allow_insecure_webhook():
+        # A webhook URL is itself a bearer credential, and the alert body carries
+        # the monitored questions and probabilities. Over plain HTTP both are
+        # readable by anything on the path, so http:// is opt-in rather than
+        # accepted silently.
+        return (
+            "refusing to deliver over plain HTTP: the webhook URL is a credential "
+            "and the alert body would travel in the clear. Use https://, or set "
+            "SIGNALRADAR_ALLOW_INSECURE_WEBHOOK=1 if you accept that."
+        )
     if _allow_private_webhook():
         return ""
     try:

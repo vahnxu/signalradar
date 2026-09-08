@@ -187,6 +187,8 @@ signalradar.py config schedule.auto_enable false   # 在首次 add 之前设置
 
 **你的 webhook URL 本身就是一份凭据**——Telegram bot token 或 Slack webhook 路径就嵌在里面。它在任何出口都不会以全文出现：投递结果、告警封装、`config`、`doctor` 一律显示掩码形式并附稳定指纹（`https://api.telegram.org/*** (id:7c08e3b4)`）。需要真实值时设 `SIGNALRADAR_REVEAL_SECRETS=1`。
 
+**强制 HTTPS。** webhook URL 本身就是凭据，告警正文又带着你监控的内容，走明文 HTTP 两者都会暴露在链路上，因此 `http://` 目标默认拒绝；确需如此设 `SIGNALRADAR_ALLOW_INSECURE_WEBHOOK=1`。
+
 **目的地守卫。** webhook 目标必须解析到公网地址，且**连接会钉在通过校验的那个地址上**，DNS 第二次给出不同答案也改变不了去向；证书校验仍按原主机名进行。每一跳重定向都重新校验。（有 HTTP 代理时，对端本来就是代理并自行解析，最后一跳无法钉——见 SKILL.md。）局域网 webhook 用 `SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1`。
 
 **写入范围与保留期。** `file` 适配器默认只能写进数据目录，除非设 `SIGNALRADAR_ALLOW_ANY_FILE_TARGET=1`。存储的 OpenClaw 回复路由为 `0600`、30 天过期，可用 `signalradar.py schedule clear-route` 立即删除。`profile.timezone` 默认跟随本机时区，不再固定为某个时区。
