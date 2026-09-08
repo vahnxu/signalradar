@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.5.5"
+__version__ = "1.5.6"
 
 import argparse
 import json
@@ -1652,11 +1652,18 @@ def _scheduler_run_command(output_mode: str) -> str:
 
 def _openclaw_scheduler_prompt() -> str:
     command = _scheduler_run_command("openclaw")
+    # Scoped to this job's own output only. An earlier version told the agent
+    # how to format its reply in absolute terms ("reply with exactly ... and
+    # nothing else", "no markdown, no commentary"), which is output control
+    # propagating from a scheduled job into the agent's session — the audit read
+    # it as instruction hijacking. The need is narrow: the check's stdout is
+    # already user-facing text, so it should be relayed rather than rewritten.
     return (
-        "Run the scheduled SignalRadar background check for this workspace.\n"
-        f"Use Bash exactly once with this command:\n{command}\n"
-        "If stdout is exactly HEARTBEAT_OK, reply with exactly HEARTBEAT_OK and nothing else.\n"
-        "Otherwise reply with stdout exactly, no markdown, no commentary, no preface."
+        "Run this workspace's scheduled SignalRadar check.\n"
+        f"Use Bash once with this command:\n{command}\n"
+        "Its stdout is already the message for the user; relay it as-is rather "
+        "than summarising or reformatting it. A stdout of HEARTBEAT_OK means "
+        "there is nothing to report for this run."
     )
 
 
@@ -1913,7 +1920,12 @@ def _check_cron_status() -> dict[str, Any]:
             jobs = json.loads(result.stdout)
             if isinstance(jobs, list):
                 for job in jobs:
-                    if "SignalRadar" in str(job.get("name", "")):
+                    # Exact name match, same as removal. The previous round fixed
+                    # the DELETE path and left this one substring-matching, so a
+                    # user job named with "SignalRadar" in it still showed up as
+                    # this skill's schedule — wrong status, and the wrong thing
+                    # for any later management action to act on.
+                    if str(job.get("name", "")).strip() == _OPENCLAW_CRON_NAME:
                         status["enabled"] = True
                         status["driver"] = "openclaw"
                         # Parse interval from every field

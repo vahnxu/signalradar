@@ -14,7 +14,7 @@ description: >-
 allowed-tools: "Bash(python3 scripts/signalradar.py:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-version: 1.5.5
+version: 1.5.6
 ---
 
 # SignalRadar
@@ -134,7 +134,7 @@ When watchlist is empty and Agent runs `add/run --output json`, the response wil
 In Bot/Agent mode, new user onboarding goes through the `onboard` subcommand in three steps:
 1. `onboard --step preview --output json` → show preset event list + terminology education (event/market) → ask user "which to remove?"
 2. `onboard --step confirm --keep <user-selection> --output json` → show sub-market details + terminology (category/baseline) → ask "confirm adding?"
-3. `onboard --step finalize --output json` → write watchlist + enable auto-monitoring → show completion + next steps
+3. `onboard --step finalize --output json` → write watchlist, then report whether background monitoring is available → **ask the user before enabling it** (CR-06) → show completion + next steps
 Each step must wait for user reply before proceeding. Do NOT compress the 3 steps into 1.
 
 **Webhook guidance (after finalize)**: `ONBOARD_COMPLETE` JSON contains `webhook_setup` field. When `webhook_setup.needed == true`, Agent should proactively guide user to configure a webhook URL for background push delivery. Provide Telegram Bot API / Slack / Discord URL examples. After user provides URL, run `config delivery webhook <URL>`.
