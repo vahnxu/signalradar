@@ -14,7 +14,7 @@ description: >-
 allowed-tools: "Bash(python3 scripts/signalradar.py:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-version: 1.5.3
+version: 1.5.4
 ---
 
 # SignalRadar
@@ -216,7 +216,8 @@ python3 scripts/signalradar.py doctor --output json
 python3 scripts/signalradar.py add
 python3 scripts/signalradar.py add https://polymarket.com/event/your-market-here
 
-# 3. Monitoring auto-starts after first add (every 10 min)
+# 3. After the first add, the agent asks whether to enable background
+#    monitoring; nothing is scheduled unless you agree (see CR-06)
 
 # 4. Check schedule status
 python3 scripts/signalradar.py schedule
@@ -403,7 +404,7 @@ All settings have sensible defaults. Runtime configuration lives at `~/.signalra
 | `digest.time_local` | `09:00` | Digest local send time |
 | `digest.top_n` | `10` | Max movers shown in human-readable digest |
 | `baseline.cleanup_after_expiry_days` | 90 | Days after market end date to clean up baseline |
-| `profile.timezone` | `Asia/Shanghai` | Display timezone |
+| `profile.timezone` | *(empty — follows the machine)* | Display timezone |
 | `profile.language` | `""` | System-message locale (`zh` / `en`); empty = automatic detection (env first, timezone fallback) |
 
 ### Delivery adapters
@@ -442,9 +443,9 @@ SignalRadar implements digest reporting. The digest uses the same delivery chann
 
 ## Scheduling
 
-SignalRadar attempts to auto-enable 10-minute background monitoring after the first successful `add` or `onboard finalize`. The default driver is system `crontab` (zero LLM cost; `--push` only for `openclaw` delivery); falls back to `openclaw cron` only when crontab is unavailable. **Route gate**: when `delivery.primary.channel == openclaw` + `crontab` driver + no captured reply route, the CLI enables monitoring but reports `route_missing`; do not claim background chat delivery is ready until `delivery_status` is `ready`.
+After the first successful `add` or `onboard finalize`, SignalRadar reports that background monitoring is available and the agent asks whether to enable it; **nothing is scheduled until you agree** (`schedule.auto_enable true` allows it without asking, `false` refuses permanently, and `--yes` counts as agreement for automation — see CR-06). Once enabled, the default driver is system `crontab` (zero LLM cost; `--push` only for `openclaw` delivery), falling back to `openclaw cron` only when crontab is unavailable.
 
-On the first successful `add`, if `profile.language` is still empty, SignalRadar snapshots the detected system-message language into user config so background cron notifications remain stable.
+On the first successful `add`, if `profile.language` is still empty, SignalRadar records the detected system-message language in your config so background notifications stay in one language rather than shifting with the environment a cron job happens to run under. Change or clear it any time with `config profile.language`.
 
 Minimum interval: 5 minutes (prevents overlapping runs).
 
