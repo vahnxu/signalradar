@@ -14,7 +14,7 @@ description: >-
 allowed-tools: "Bash(python3 scripts/signalradar.py:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-version: 1.5.6
+version: 1.5.7
 ---
 
 # SignalRadar

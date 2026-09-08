@@ -103,9 +103,37 @@ def slugify(text: str) -> str:
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 
 
+# ---------------------------------------------------------------------------
+# Outbound fetch guard
+#
+# SKILL.md declares exactly two data hosts. A declaration that nothing enforces
+# is just prose, so it is enforced here: a fetch to anything else is refused
+# before the socket opens. This also closes the shape the audit named —
+# "unrestricted URL fetching permits requests to internal services and cloud
+# metadata endpoints" — because an internal address is by definition not one of
+# the two allowed hosts.
+# ---------------------------------------------------------------------------
+
+ALLOWED_FETCH_HOSTS = frozenset({"gamma-api.polymarket.com", "clob.polymarket.com"})
+
+
+def assert_allowed_fetch_url(url: str) -> None:
+    """Raise ValueError unless the URL targets a declared Polymarket host."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https":
+        raise ValueError(f"refusing non-HTTPS data fetch: {parts.scheme or '(none)'}://…")
+    host = (parts.hostname or "").lower()
+    if host not in ALLOWED_FETCH_HOSTS:
+        raise ValueError(
+            f"refusing fetch to {host or '(no host)'}: this skill only reads from "
+            + ", ".join(sorted(ALLOWED_FETCH_HOSTS))
+        )
+
+
 def _api_get(path: str, timeout: int = HTTP_TIMEOUT) -> Any:
     """GET request to gamma API. Returns parsed JSON or raises."""
     url = f"{GAMMA_API_BASE}{path}"
+    assert_allowed_fetch_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read(MAX_RESPONSE_BYTES + 1)
@@ -419,6 +447,7 @@ def fetch_price_history_points(clob_token_id: str) -> list[Any]:
             f"{CLOB_API_BASE}/prices-history"
             f"?market={urllib.parse.quote(token)}&interval=1w&fidelity=360"
         )
+        assert_allowed_fetch_url(url)
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=TREND_HTTP_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))

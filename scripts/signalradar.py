@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.5.6"
+__version__ = "1.5.7"
 
 import argparse
 import json
