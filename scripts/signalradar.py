@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 
 import argparse
 import json
@@ -137,11 +137,25 @@ def _reply_route_path() -> Path:
 # Reply-route capture & persistence
 # ---------------------------------------------------------------------------
 
-def _capture_reply_route() -> None:
-    """If OpenClaw reply-route env vars are present, persist them."""
+def _capture_reply_route(config_override: str = "") -> None:
+    """Persist the OpenClaw reply route — only when that channel is in use.
+
+    Earlier versions wrote this file on every CLI invocation whenever the env
+    vars happened to be set, so running `list` or `config` was enough to leave
+    a record of the channel, target, account and thread on disk. Routing state
+    is only needed by the `openclaw` delivery adapter, so it is captured only
+    when that adapter is the configured one.
+    """
     channel = os.environ.get("OPENCLAW_REPLY_CHANNEL", "").strip()
     target = os.environ.get("OPENCLAW_REPLY_TARGET", "").strip()
     if not channel or not target:
+        return
+    try:
+        cfg = _load_config(config_override)
+    except Exception:  # noqa: BLE001
+        return
+    primary = str(cfg.get("delivery", {}).get("primary", {}).get("channel", "") or "").strip()
+    if primary != "openclaw":
         return
     route: dict[str, Any] = {
         "schema_version": 1,
@@ -1846,14 +1860,20 @@ def _remove_cron() -> tuple[bool, str]:
             jobs = json.loads(result.stdout)
             if isinstance(jobs, list):
                 for job in jobs:
-                    if "SignalRadar" in str(job.get("name", "")):
-                        job_id = job.get("id", "")
-                        if job_id:
-                            subprocess.run(
-                                ["openclaw", "cron", "delete", str(job_id)],
-                                capture_output=True, text=True, timeout=15
-                            )
-                            removed_any = True
+                    # Exact name match only. A substring test on "SignalRadar"
+                    # deletes any job the USER named with that word in it — e.g.
+                    # "SignalRadar weekly backup" — and `schedule disable` would
+                    # remove it silently. Only the job this skill created, under
+                    # the exact name it created it with, is ours to delete.
+                    if str(job.get("name", "")).strip() != _OPENCLAW_CRON_NAME:
+                        continue
+                    job_id = job.get("id", "")
+                    if job_id:
+                        subprocess.run(
+                            ["openclaw", "cron", "delete", str(job_id)],
+                            capture_output=True, text=True, timeout=15
+                        )
+                        removed_any = True
     except (FileNotFoundError, json.JSONDecodeError, Exception):
         pass  # openclaw not available, skip
 
@@ -4154,8 +4174,8 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 
 
 def _emit_startup_notices(args: argparse.Namespace) -> None:
-    # Capture reply route from OpenClaw foreground env if present
-    _capture_reply_route()
+    # Capture reply route only when the openclaw delivery adapter is active
+    _capture_reply_route(getattr(args, "config", ""))
 
     notices = _ensure_user_data_ready()
     if not notices:

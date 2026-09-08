@@ -14,7 +14,7 @@ description: >-
 allowed-tools: "Bash(python3 scripts/signalradar.py:*)"
 license: MIT
 compatibility: Python 3.9+, network access to gamma-api.polymarket.com. No pip dependencies (stdlib only).
-version: 1.5.2
+version: 1.5.3
 ---
 
 # SignalRadar
@@ -54,7 +54,9 @@ Set `schedule.auto_enable false` to refuse it permanently (the agent stops askin
 
 **File adapter.** The `file` adapter must write inside the data directory (`~/.signalradar`, or `$SIGNALRADAR_DATA_DIR`); it also refuses dotfiles and non-log extensions. Scoping it this way, rather than blocklisting known-sensitive directories, is deliberate — a blocklist misses whatever is not on it. Set `SIGNALRADAR_ALLOW_ANY_FILE_TARGET=1` to write elsewhere.
 
-**Retention.** The OpenClaw reply route (`cache/openclaw_reply_route.json`, mode `0600`) records where a background alert would be sent. It expires after 30 days and is deleted on expiry; `signalradar.py schedule clear-route` removes it immediately.
+**Retention.** The OpenClaw reply route (`cache/openclaw_reply_route.json`, mode `0600`) records where a background alert would be sent. It is written **only when `openclaw` is the configured delivery channel** — earlier versions wrote it on any CLI invocation whose environment happened to carry those variables, so merely running `list` left a record on disk. It expires after 30 days and is deleted on expiry; `signalradar.py schedule clear-route` removes it immediately.
+
+**Scheduler cleanup touches only its own job.** `schedule disable` removes the tagged `crontab` line this skill wrote, and an OpenClaw cron job **only when its name matches exactly** the one this skill creates. A substring test would have deleted any job you named with "SignalRadar" in it.
 
 **Timezone.** `profile.timezone` is empty by default and resolves to your machine's timezone. Earlier versions defaulted to `Asia/Shanghai`, which shifted schedules and digests for anyone who had not chosen it.
 
