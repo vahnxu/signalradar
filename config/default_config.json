@@ -1,6 +1,6 @@
 {
   "profile": {
-    "timezone": "Asia/Shanghai",
+    "timezone": "",
     "language": ""
   },
   "check_interval_minutes": 10,

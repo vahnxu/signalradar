@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -85,11 +86,159 @@ def _scrub(text: str, target: str) -> str:
 # cloud metadata endpoint) unless explicitly allowed.
 # ---------------------------------------------------------------------------
 
+def _is_public_ip(ip: "ipaddress._BaseAddress") -> bool:
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _resolve_public_addresses(host: str) -> tuple[list[tuple[int, str, int]], str]:
+    """Resolve a host and keep only public addresses.
+
+    Returns (addresses, error). Each address is (family, ip, port-from-getaddrinfo).
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        return [], f"cannot resolve webhook host {host!r}: {exc}"
+    public: list[tuple[int, str, int]] = []
+    for info in infos:
+        family, _, _, _, sockaddr = info
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            continue
+        if _is_public_ip(ip):
+            public.append((family, sockaddr[0], 0))
+    if not public:
+        # Every answer was loopback/private/link-local/reserved — including the
+        # cloud metadata range. Mixed answers are not fatal because the
+        # connection is pinned to one of the public addresses below, so a
+        # private entry in the set is never dialled.
+        return [], (
+            f"webhook host {host!r} resolves only to non-public addresses; refused. "
+            "Set SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1 to allow."
+        )
+    return public, ""
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection that dials a pre-validated IP, not a fresh DNS answer.
+
+    Validating a hostname and then handing that hostname to the socket layer
+    lets the second lookup return a different answer than the one that passed
+    (DNS rebinding). The address that passed validation is therefore carried
+    here and dialled directly, while `Host` and the TLS handshake keep using
+    the original hostname so certificate verification is unchanged.
+    """
+
+    def __init__(self, host, pinned_ip, **kw):
+        super().__init__(host, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        # Re-check what we are actually attached to: the pin is only as good as
+        # the socket that came back.
+        peer = self.sock.getpeername()[0]
+        try:
+            if not _is_public_ip(ipaddress.ip_address(peer)):
+                self.sock.close()
+                raise OSError(f"peer address {peer} is not public; refused")
+        except ValueError:
+            pass
+        if self._tunnel_host:
+            self._tunnel()
+        server_hostname = self._tunnel_host or self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Plain-HTTP counterpart of _PinnedHTTPSConnection."""
+
+    def __init__(self, host, pinned_ip, **kw):
+        super().__init__(host, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port), self.timeout, self.source_address
+        )
+        peer = self.sock.getpeername()[0]
+        try:
+            if not _is_public_ip(ipaddress.ip_address(peer)):
+                self.sock.close()
+                raise OSError(f"peer address {peer} is not public; refused")
+        except ValueError:
+            pass
+
+
+def _proxy_in_play(req) -> bool:
+    """True when urllib will route this request through a proxy.
+
+    With a proxy configured, the socket peer is the proxy by design — usually
+    on loopback — and pinning the destination address is both wrong and fatal
+    to delivery. The webhook URL's own hostname is still checked up front, and
+    every redirect hop is still revalidated; what cannot be enforced behind a
+    proxy is the address the PROXY finally dials. That boundary is stated in
+    SKILL.md rather than papered over.
+    """
+    if getattr(req, "host", None) is None:
+        return False
+    # ProxyHandler rewrites req.host to the proxy while req.full_url keeps the
+    # original destination, so a mismatch is the proxy. Asking getproxies() and
+    # proxy_bypass() instead does not work: by the time this handler runs the
+    # host has already been rewritten, and proxy_bypass("127.0.0.1") is true for
+    # a loopback proxy, which reads as "no proxy" and refuses every delivery.
+    try:
+        origin = urllib.parse.urlsplit(req.full_url).hostname or ""
+    except ValueError:
+        return False
+    current = req.host.split(":")[0].strip("[]")
+    return bool(origin) and origin.lower() != current.lower()
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        host = req.host.split(":")[0].strip("[]")
+        if _allow_private_webhook() or _proxy_in_play(req):
+            return super().https_open(req)
+        addrs, err = _resolve_public_addresses(host)
+        if err:
+            raise urllib.error.URLError(err)
+        pinned = addrs[0][1]
+        return self.do_open(
+            lambda h, **kw: _PinnedHTTPSConnection(
+                h, pinned, context=self._context, **kw
+            ),
+            req,
+        )
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        host = req.host.split(":")[0].strip("[]")
+        if _allow_private_webhook() or _proxy_in_play(req):
+            return super().http_open(req)
+        addrs, err = _resolve_public_addresses(host)
+        if err:
+            raise urllib.error.URLError(err)
+        pinned = addrs[0][1]
+        return self.do_open(
+            lambda h, **kw: _PinnedHTTPConnection(h, pinned, **kw), req
+        )
+
+
+def _allow_private_webhook() -> bool:
+    return os.environ.get("SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK", "").strip() in {"1", "true", "yes"}
+
+
 def _webhook_target_error(target: str) -> str:
     """Return an error string if the webhook target is unsafe, else ''."""
     if not target.lower().startswith(("http://", "https://")):
         return "invalid webhook url (must start with http:// or https://)"
-    if os.environ.get("SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK", "").strip() in {"1", "true", "yes"}:
+    if _allow_private_webhook():
         return ""
     try:
         host = urllib.parse.urlsplit(target).hostname
@@ -97,24 +246,11 @@ def _webhook_target_error(target: str) -> str:
         return "invalid webhook url"
     if not host:
         return "invalid webhook url (no host)"
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError as exc:
-        # Fail closed. A name that will not resolve cannot receive a delivery
-        # anyway, so refusing costs nothing — whereas allowing it means the
-        # guard yields on exactly the input it cannot evaluate.
-        return f"cannot resolve webhook host {host!r}: {exc}"
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
-            return (
-                f"webhook host resolves to a non-public address ({ip}); refused. "
-                "Set SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1 to allow."
-            )
-    return ""
+    # Fail closed on resolution failure: a name that will not resolve cannot
+    # receive a delivery anyway, so refusing costs nothing — whereas allowing it
+    # means the guard yields on exactly the input it cannot evaluate.
+    _addrs, err = _resolve_public_addresses(host)
+    return err
 
 
 class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -135,7 +271,12 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _guarded_opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_GuardedRedirectHandler())
+    # Address pinning and per-hop revalidation are installed together: the
+    # redirect handler re-runs the name check, the pinned handlers make sure the
+    # socket goes to the address that check approved.
+    return urllib.request.build_opener(
+        _GuardedRedirectHandler(), _PinnedHTTPHandler(), _PinnedHTTPSHandler()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +288,15 @@ def _guarded_opener() -> urllib.request.OpenerDirector:
 # ---------------------------------------------------------------------------
 
 _FILE_ALLOWED_SUFFIXES = {".jsonl", ".ndjson", ".json", ".log", ".txt"}
+
+
+def _file_adapter_root() -> Path:
+    env = os.environ.get("SIGNALRADAR_DATA_DIR", "").strip()
+    return (Path(env) if env else Path.home() / ".signalradar").expanduser()
+
+
+def _allow_outside_data_dir() -> bool:
+    return os.environ.get("SIGNALRADAR_ALLOW_ANY_FILE_TARGET", "").strip() in {"1", "true", "yes"}
 
 
 def _file_target_error(out: Path) -> tuple[str, Path | None]:
@@ -174,6 +324,19 @@ def _file_target_error(out: Path) -> tuple[str, Path | None]:
         except ValueError:
             continue
         return f"file target must not be inside ~/{blocked}", None
+
+    # Default-deny outside the skill's own data directory. Enumerating unsafe
+    # directories is a blocklist, and a blocklist misses whatever is not on it;
+    # an append primitive pointed anywhere on disk is the actual capability an
+    # alerting skill should not have.
+    if not _allow_outside_data_dir():
+        try:
+            resolved.relative_to(_file_adapter_root().resolve())
+        except (ValueError, OSError):
+            return (
+                f"file target must be inside {_file_adapter_root()} "
+                "(set SIGNALRADAR_ALLOW_ANY_FILE_TARGET=1 to write elsewhere)"
+            ), None
     return "", resolved
 
 
@@ -191,7 +354,13 @@ def _format_event_time(ts_raw: str, config: dict[str, Any] | None = None) -> str
         return ts_raw
     tz_name = "UTC"
     if config:
-        tz_name = str(config.get("profile", {}).get("timezone", "UTC") or "UTC")
+        tz_name = str(config.get("profile", {}).get("timezone", "") or "").strip()
+        if not tz_name:
+            try:
+                link = os.path.realpath("/etc/localtime")
+                tz_name = link.split("/zoneinfo/", 1)[1] if "/zoneinfo/" in link else "UTC"
+            except OSError:
+                tz_name = "UTC"
     try:
         from zoneinfo import ZoneInfo
         local_dt = dt.astimezone(ZoneInfo(tz_name))

@@ -13,7 +13,10 @@ from typing import Any
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "profile": {
-        "timezone": "Asia/Shanghai",
+        # Empty = use the machine's local timezone. Hard-coding one made
+        # schedules and digests fire at unexpected local times for anyone
+        # outside that zone, without them ever choosing it.
+        "timezone": "",
         "language": "",
     },
     "check_interval_minutes": 10,

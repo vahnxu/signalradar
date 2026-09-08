@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 
 import argparse
 import json
@@ -158,20 +158,57 @@ def _capture_reply_route() -> None:
     p = _reply_route_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(route, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
+REPLY_ROUTE_TTL_DAYS = 30
 
 
 def _load_reply_route() -> dict[str, Any] | None:
-    """Load stored reply route. Returns None if missing."""
+    """Load the stored reply route, expiring it after REPLY_ROUTE_TTL_DAYS.
+
+    This file holds the channel, target, account and thread the background job
+    would message. Keeping that indefinitely means the ability to send to a
+    conversation outlives any interaction with it, so it is aged out and the
+    stale copy deleted rather than left on disk. `schedule clear-route` removes
+    it immediately.
+    """
     p = _reply_route_path()
     if not p.exists():
         return None
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        if data.get("channel") and data.get("target"):
-            return data
-        return None
     except Exception:
         return None
+    if not (data.get("channel") and data.get("target")):
+        return None
+    captured = str(data.get("captured_at", "")).strip()
+    if captured:
+        try:
+            when = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - when).days > REPLY_ROUTE_TTL_DAYS:
+                _clear_reply_route()
+                return None
+        except ValueError:
+            pass
+    return data
+
+
+def _clear_reply_route() -> bool:
+    """Delete the stored reply route. Returns True if a file was removed."""
+    p = _reply_route_path()
+    try:
+        if p.exists():
+            p.unlink()
+            return True
+    except OSError:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +421,30 @@ def _config_key_exists(key: str, merged: dict[str, Any]) -> bool:
     return found or _is_dynamic_config_key(key)
 
 
+def _system_timezone_name() -> str:
+    """Best-effort IANA name for this machine's timezone, else 'UTC'.
+
+    Used when profile.timezone is unset. The previous default hard-coded
+    Asia/Shanghai, which silently shifted every schedule and digest for users
+    who never chose that zone.
+    """
+    tz_env = os.environ.get("TZ", "").strip()
+    if tz_env:
+        return tz_env
+    try:
+        link = os.path.realpath("/etc/localtime")
+        if "/zoneinfo/" in link:
+            return link.split("/zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return "UTC"
+
+
+def _effective_timezone(config: dict[str, Any]) -> str:
+    configured = str(config.get("profile", {}).get("timezone", "") or "").strip()
+    return configured or _system_timezone_name()
+
+
 _SUPPORTED_DELIVERY_CHANNELS = {"openclaw", "file", "webhook"}
 _SUPPORTED_LANGUAGES = {"zh", "en"}
 _SUPPORTED_DIGEST_FREQUENCIES = {"off", "daily", "weekly", "biweekly"}
@@ -416,7 +477,7 @@ def _format_user_time(value: str, config: dict[str, Any]) -> str:
         return value
     if ZoneInfo is None:
         return value
-    timezone_name = str(config.get("profile", {}).get("timezone", "UTC") or "UTC")
+    timezone_name = _effective_timezone(config)
     try:
         local_dt = dt.astimezone(ZoneInfo(timezone_name))
     except Exception:
@@ -509,7 +570,7 @@ def _parse_local_time_string(value: str) -> tuple[int, int] | None:
 
 
 def _local_now(config: dict[str, Any]) -> datetime:
-    timezone_name = str(config.get("profile", {}).get("timezone", "UTC") or "UTC")
+    timezone_name = _effective_timezone(config)
     if ZoneInfo is None:
         return datetime.now(timezone.utc)
     try:
@@ -2558,6 +2619,11 @@ def cmd_schedule(args: argparse.Namespace) -> int:
         return 0
 
     # Disable
+    if action == "clear-route":
+        removed = _clear_reply_route()
+        print("Stored reply route deleted." if removed else "No stored reply route.")
+        return 0
+
     if action == "disable":
         ok, msg = _remove_cron()
         print(msg)
@@ -2567,7 +2633,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     try:
         interval = int(action)
     except ValueError:
-        print(f"Error: Invalid argument '{action}'. Use a number (minutes) or 'disable'.")
+        print(f"Error: Invalid argument '{action}'. Use a number (minutes), 'disable', or 'clear-route'.")
         return 1
 
     if interval < 5:
@@ -4158,7 +4224,7 @@ def main() -> int:
 
     # schedule
     p_sched = sub.add_parser("schedule", help="Manage auto-monitoring schedule")
-    p_sched.add_argument("action", nargs="?", default="", help="Interval in minutes, or 'disable'")
+    p_sched.add_argument("action", nargs="?", default="", help="Interval in minutes, 'disable', or 'clear-route'")
     p_sched.add_argument("--driver", choices=["auto", "crontab", "openclaw"], default="auto",
                          help="Scheduling driver (default: auto, prefers OpenClaw)")
     p_sched.add_argument("--output", choices=["text", "json"], default="text")
