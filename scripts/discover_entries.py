@@ -129,13 +129,35 @@ def assert_allowed_fetch_url(url: str) -> None:
             + ", ".join(sorted(ALLOWED_FETCH_HOSTS))
         )
 
+class _AllowlistRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-check every redirect hop against the allowlist.
+
+    Validating only the first URL leaves the guard trivially bypassable: the
+    API could answer 302 and urllib would follow it anywhere. The webhook path
+    learned this earlier; the fetch guard was written without it, and the audit
+    caught the gap ("Polymarket fetch code can follow redirects outside the
+    stated network"). One invariant, every place that implements it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            assert_allowed_fetch_url(newurl)
+        except ValueError as exc:
+            raise urllib.error.HTTPError(newurl, code, f"redirect refused: {exc}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _allowlisted_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_AllowlistRedirectHandler())
+
+
 
 def _api_get(path: str, timeout: int = HTTP_TIMEOUT) -> Any:
     """GET request to gamma API. Returns parsed JSON or raises."""
     url = f"{GAMMA_API_BASE}{path}"
     assert_allowed_fetch_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _allowlisted_opener().open(req, timeout=timeout) as resp:
         body = resp.read(MAX_RESPONSE_BYTES + 1)
         if len(body) > MAX_RESPONSE_BYTES:
             raise ValueError("Polymarket API response exceeded size cap")
@@ -449,7 +471,7 @@ def fetch_price_history_points(clob_token_id: str) -> list[Any]:
         )
         assert_allowed_fetch_url(url)
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=TREND_HTTP_TIMEOUT) as resp:
+        with _allowlisted_opener().open(req, timeout=TREND_HTTP_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         history = data.get("history") if isinstance(data, dict) else None
         return history if isinstance(history, list) else []

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -118,11 +119,33 @@ def assert_allowed_fetch_url(url: str) -> None:
             + ", ".join(sorted(ALLOWED_FETCH_HOSTS))
         )
 
+class _AllowlistRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-check every redirect hop against the allowlist.
+
+    Validating only the first URL leaves the guard trivially bypassable: the
+    API could answer 302 and urllib would follow it anywhere. The webhook path
+    learned this earlier; the fetch guard was written without it, and the audit
+    caught the gap ("Polymarket fetch code can follow redirects outside the
+    stated network"). One invariant, every place that implements it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            assert_allowed_fetch_url(newurl)
+        except ValueError as exc:
+            raise urllib.error.HTTPError(newurl, code, f"redirect refused: {exc}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _allowlisted_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_AllowlistRedirectHandler())
+
+
 
 def fetch_json(url: str, timeout: int) -> Any:
     assert_allowed_fetch_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": "signalradar-skill/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _allowlisted_opener().open(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
