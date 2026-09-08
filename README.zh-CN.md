@@ -165,6 +165,32 @@ signalradar.py schedule 10 --driver crontab   # 强制使用系统 crontab
 signalradar.py schedule disable      # 禁用自动监控
 ```
 
+## 安全与数据处理
+
+**出网目的地**——三个，其中两个写死，一个由你设置：
+
+| 目的地 | 用途 | 谁决定 |
+|---|---|---|
+| `gamma-api.polymarket.com` | 市场与事件数据（只读） | 写死 |
+| `clob.polymarket.com` | 7 天价格历史，仅在命中时拉取 | 写死 |
+| 你的 webhook URL | 告警发到哪里 | **你** |
+
+不联系任何其他主机。无遥测、无统计，不向作者发送任何数据。
+
+**本地写入**——全部在 `~/.signalradar/`（或 `$SIGNALRADAR_DATA_DIR`）之下；配置文件 `0600`，目录 `0700`。系统上不写任何其他位置，只有一个例外：
+
+**后台常驻。** 首次 `add` 成功后，SignalRadar 会往你的 `crontab` 写入一条带标记的条目，每 10 分钟执行一次。用 `crontab -l | grep signalradar` 查看，用 `schedule disable` 移除，或者干脆不让它装：
+
+```bash
+signalradar.py config schedule.auto_enable false   # 在首次 add 之前设置
+```
+
+**你的 webhook URL 本身就是一份凭据**——Telegram bot token 或 Slack webhook 路径就嵌在里面。它在任何出口都不会以全文出现：投递结果、告警封装、`config`、`doctor` 一律显示掩码形式并附稳定指纹（`https://api.telegram.org/*** (id:7c08e3b4)`）。需要真实值时设 `SIGNALRADAR_REVEAL_SECRETS=1`。
+
+**目的地守卫。** 解析到环回、私网或链路本地地址的 webhook 目标会被拒绝，且每一跳重定向都会重新校验。若你确实要投递到自己局域网内的 webhook，设 `SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1`。
+
+**Polymarket 文本按外部不可信数据对待**——市场标题只展示，绝不作为指令执行。
+
 ## 运行数据目录
 
 SignalRadar 将用户数据存放在 skill 目录外，避免 `clawhub update` 覆盖监控列表和基线。

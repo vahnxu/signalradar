@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import argparse
 import json
@@ -65,7 +65,13 @@ from discover_entries import (
     resolve_event,
     summarize_trend,
 )
-from route_delivery import context_lines, deliver_digest, deliver_hit, severity_for_event
+from route_delivery import (
+    context_lines,
+    deliver_digest,
+    deliver_hit,
+    mask_target,
+    severity_for_event,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +206,62 @@ def _cron_log_path() -> Path:
     return _user_data_root() / "cache" / "cron.log"
 
 
+def _ensure_cron_log_private() -> None:
+    """Pre-create the cron log 0600.
+
+    The crontab line appends with `>> log 2>&1`; a shell-created file gets the
+    default umask (0644). Run output can carry delivery diagnostics, so the
+    file is created ahead of time with restrictive permissions.
+    """
+    log_path = _cron_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(exist_ok=True)
+        os.chmod(log_path, 0o600)
+    except OSError:
+        pass
+
+
+# 日志轮转（2026-08-30，GCP 部署实证：cron.log 无限 append 5 个月长到 922MB，
+# signal_events.jsonl 同期长到 293MB，把一台 20GB 磁盘吃到 90%）。
+#
+# 根因：`_cron_command_line()` 用 shell `>>` 重定向到 cron.log，`check_entry()`
+# 给每次巡检的每个 watchlist 条目都追加一行到 signal_events.jsonl（不只是命中
+# 的条目）——两者都从未设计过任何上限，是 skill 本身的设计缺口，与具体部署无关。
+#
+# 轮转策略：按大小阈值重命名（不做原地截断）。原因：`cron.log` 的目标文件早在
+# python 进程启动前就已经被 shell `>>` 打开并绑定到当前 inode 上——本次调用内
+# 原地截断没有意义。重命名只影响"下一次" cron 调用 shell 重新 `>>` 打开时拿到
+# 的是全新文件，这正是需要的效果（每次 cron 调用都是独立进程，各自新开 fd）。
+_LOG_ROTATE_MAX_BYTES = 20 * 1024 * 1024  # 20MB：约等于当前观测增速下几天的量，
+                                            # 足够排障，远小于把磁盘写满的风险
+_LOG_ROTATE_KEEP = 1  # 只留一份 .1 备份，诊断够用，不重新引入无界增长
+
+
+def _rotate_log_if_needed(path: Path, max_bytes: int = _LOG_ROTATE_MAX_BYTES,
+                           keep: int = _LOG_ROTATE_KEEP) -> None:
+    """超过 max_bytes 就把 path 轮转为 path.1（若已存在 .1 先丢弃，keep=1 时）。
+
+    轮转失败（权限/磁盘异常等）不应该阻断本次巡检主流程，吞掉异常继续跑，
+    但吞掉之前不重新抛出——这个函数本身只做维护性工作，不是巡检的核心职责。
+    """
+    try:
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return
+        for idx in range(keep, 0, -1):
+            backup = path.with_name(f"{path.name}.{idx}")
+            if idx == keep:
+                if backup.exists():
+                    backup.unlink(missing_ok=True)
+            else:
+                older = path.with_name(f"{path.name}.{idx + 1}")
+                if backup.exists():
+                    backup.rename(older)
+        path.rename(path.with_name(f"{path.name}.1"))
+    except OSError:
+        pass
+
+
 def _digest_state_path() -> Path:
     return _user_data_root() / "cache" / "digest_state.json"
 
@@ -213,6 +275,12 @@ def _safe_copy_file(src: Path, dst: Path) -> bool:
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+    # copy2 preserves the shipped file's mode (0644). User data may hold a
+    # webhook credential, so restrict it regardless of where it came from.
+    try:
+        os.chmod(dst, 0o600)
+    except OSError:
+        pass
     return True
 
 
@@ -239,6 +307,12 @@ def _ensure_user_data_ready() -> list[str]:
         config_dir.mkdir(parents=True, exist_ok=True)
         baseline_dir.mkdir(parents=True, exist_ok=True)
         events_dir.mkdir(parents=True, exist_ok=True)
+        # User data root holds config (webhook credential) and the audit log.
+        for _d in (_user_data_root(), config_dir, baseline_dir.parent, baseline_dir, events_dir):
+            try:
+                os.chmod(_d, 0o700)
+            except OSError:
+                pass
 
         migrated = False
         legacy_config_dir = SKILL_ROOT / "config"
@@ -1561,6 +1635,7 @@ def _push_message(text: str) -> dict[str, Any]:
 
 def _cron_command_line() -> str:
     """Build the crontab command that runs SignalRadar."""
+    _ensure_cron_log_private()
     log_path = _cron_log_path()
     # Only add --push when delivery channel is openclaw (needs reply route).
     # For webhook/file channels, deliver_hit()/deliver_digest() handle delivery directly.
@@ -1796,11 +1871,27 @@ def _check_cron_status() -> dict[str, Any]:
 def _ensure_auto_monitoring(interval: int = 10, config_override: str = "", quiet: bool = False, driver: str = "auto") -> dict[str, Any]:
     """Check if cron exists; if not, set it up. Idempotent.
 
+    schedule.auto_enable (default true) is checked HERE, in the single shared
+    entry point for *implicit* installation, rather than at each call site —
+    `add`, `onboard finalize` and interactive onboarding all route through
+    this function, and gating them one by one leaves whichever one is added
+    next unguarded. Explicit `signalradar.py schedule N` does not come through
+    here and keeps its own authorization semantics: asking for a schedule is
+    consent to installing one.
+
     When delivery.primary.channel == openclaw and the resolved driver is
     crontab (which uses --push), warn if no reply route is stored while still
     enabling monitoring. Explicit --driver openclaw bypasses this warning
     (platform announce path).
     """
+    auto_cfg = _load_config(config_override)
+    if not bool(auto_cfg.get("schedule", {}).get("auto_enable", True)):
+        return {
+            "auto_enabled": False,
+            "interval_minutes": interval,
+            "reason": "schedule.auto_enable is false — run 'signalradar.py schedule 10' to enable manually.",
+        }
+
     cron_status = _check_cron_status()
     if cron_status["enabled"]:
         return {
@@ -1925,7 +2016,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         check(
             "webhook_url_configured",
             webhook_ok,
-            target[:80] if webhook_ok else "not configured — use: signalradar.py config delivery.primary.target <URL>",
+            mask_target(target) if webhook_ok else "not configured — use: signalradar.py config delivery.primary.target <URL>",
         )
     cache_dir = _user_data_root() / "cache"
     check("cache_dir_writable", cache_dir.exists() and os.access(cache_dir, os.W_OK), str(cache_dir))
@@ -2229,18 +2320,63 @@ def cmd_add(args: argparse.Namespace) -> int:
 # cmd_config
 # ---------------------------------------------------------------------------
 
+# A `target` leaf anywhere under `delivery` holds a webhook URL, i.e. a bearer
+# credential. The invariant is stated on the LEAF NAME plus its subtree, not on
+# an enumerated list of full dotted paths: an enumeration silently misses a
+# parent-level read (`config delivery`), every element of the `fallback` array,
+# and whatever key is added next.
+_SECRET_LEAF_NAMES = {"target"}
+_SECRET_SUBTREE_ROOTS = {"delivery"}
+
+
+def _is_secret_path(path: str) -> bool:
+    parts = [p for p in path.split(".") if p]
+    if not parts:
+        return False
+    return parts[-1] in _SECRET_LEAF_NAMES and parts[0] in _SECRET_SUBTREE_ROOTS
+
+
+def _mask_config_value(key: str, value: Any) -> Any:
+    """Mask credential-bearing config values before they reach stdout.
+
+    Handles scalars, and recurses into dicts and lists so that a read of a
+    PARENT key (`config delivery`, `config delivery.primary`) and every entry
+    of the `delivery.fallback` array are covered by the same exit.
+    """
+    if isinstance(value, dict):
+        return {k: _mask_config_value(f"{key}.{k}" if key else k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        # List elements inherit the parent path: delivery.fallback[i].target
+        # must be treated exactly like delivery.fallback.target.
+        return [_mask_config_value(key, v) for v in value]
+    if _is_secret_path(key) and isinstance(value, str):
+        return mask_target(value)
+    return value
+
+
+def _mask_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a config dict with every secret leaf masked, at any depth."""
+    return {k: _mask_config_value(k, v) for k, v in config.items()}
+
+
 def cmd_config(args: argparse.Namespace) -> int:
+    # Fold trailing positionals back into `value` so that
+    #   config delivery webhook <url>   ==   config delivery "webhook <url>"
+    extra = [str(x) for x in (getattr(args, "extra", None) or [])]
+    if extra:
+        args.value = " ".join([str(args.value)] + extra) if args.value is not None else " ".join(extra)
     cfg_path = _config_path(args.config)
     user_cfg = load_json_config(cfg_path)
     merged = deep_merge(DEFAULT_CONFIG, user_cfg)
 
     # No key specified: show current config
     if not args.key:
+        display = _mask_config_secrets(merged)
         if args.output == "json":
-            _json_print(merged)
+            _json_print(display)
         else:
             print("Current config:\n")
-            for k, v in sorted(merged.items()):
+            for k, v in sorted(display.items()):
                 if isinstance(v, dict):
                     print(f"  {k}:")
                     for k2, v2 in sorted(v.items()):
@@ -2264,7 +2400,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             set_nested_value(user_cfg, "delivery.primary.target", url)
             save_json_config(cfg_path, user_cfg)
             print(f"🔄 Set delivery.primary.channel = webhook")
-            print(f"🔄 Set delivery.primary.target = {url}")
+            print(f"🔄 Set delivery.primary.target = {mask_target(url)}")
             print(f"✅ Saved to {cfg_path}")
             return 0
 
@@ -2274,10 +2410,13 @@ def cmd_config(args: argparse.Namespace) -> int:
         if not found:
             print(f"Unknown key: {key}")
             return 1
+        # Both branches go through the same masking exit: a parent read
+        # (`config delivery`) returns a dict and must not bypass it.
+        masked = _mask_config_value(key, value)
         if isinstance(value, (dict, list)):
-            print(json.dumps(value, ensure_ascii=False, indent=2))
+            print(json.dumps(masked, ensure_ascii=False, indent=2))
         else:
-            print(f"{key}: {value}")
+            print(f"{key}: {masked}")
         return 0
 
     if not _config_key_exists(key, merged):
@@ -2293,7 +2432,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     set_nested_value(user_cfg, key, parsed_value)
     save_json_config(cfg_path, user_cfg)
 
-    print(f"🔄 Set {key} = {parsed_value}")
+    print(f"🔄 Set {key} = {_mask_config_value(key, parsed_value)}")
     print(f"✅ Saved to {cfg_path}")
     if key == "check_interval_minutes":
         print("📎 Note: this updates the display value only. Use 'signalradar.py schedule N' to change actual monitoring frequency.")
@@ -2922,6 +3061,9 @@ def _write_last_run(status: str, checked: int, hits_count: int,
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    # 每次巡检开头先做轮转体检（详见 _rotate_log_if_needed 头注释）。
+    _rotate_log_if_needed(_cron_log_path())
+    _rotate_log_if_needed(_audit_log_path())
     wl = load_watchlist(_watchlist_path())
     entries = wl.get("entries", [])
     config = _load_config(args.config)
@@ -3989,6 +4131,11 @@ def main() -> int:
     p_cfg = sub.add_parser("config", help="View or change settings")
     p_cfg.add_argument("key", nargs="?", default="", help="Setting name (e.g. check_interval_minutes)")
     p_cfg.add_argument("value", nargs="?", default=None, help="New value")
+    # Extra positionals so the documented shortcut form works unquoted:
+    #   config delivery webhook <url>      (3 positionals)
+    # Previously only the quoted form parsed, and the unquoted form — which is
+    # what SKILL.md tells the agent to run — died with "unrecognized arguments".
+    p_cfg.add_argument("extra", nargs="*", default=[], help=argparse.SUPPRESS)
     p_cfg.add_argument("--output", choices=["text", "json"], default="text")
     p_cfg.add_argument("--config", default="", help="Path to config JSON")
 

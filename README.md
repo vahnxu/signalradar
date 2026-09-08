@@ -165,6 +165,32 @@ signalradar.py schedule 10 --driver crontab   # Force system crontab
 signalradar.py schedule disable      # Disable auto-monitoring
 ```
 
+## Security & Data Handling
+
+**Network egress** — three destinations, all fixed except one you set:
+
+| Destination | Purpose | Who sets it |
+|---|---|---|
+| `gamma-api.polymarket.com` | Market and event data (read-only) | Hardcoded |
+| `clob.polymarket.com` | 7-day price history, fetched only on a HIT | Hardcoded |
+| Your webhook URL | Where alerts are delivered | **You** |
+
+No other host is contacted. No telemetry, no analytics, nothing goes to the author.
+
+**Local writes** — everything under `~/.signalradar/` (or `$SIGNALRADAR_DATA_DIR`); config files `0600`, directories `0700`. Nothing else on your system is written, with one exception:
+
+**Background persistence.** After your first successful `add`, SignalRadar installs a tagged `crontab` entry that runs every 10 minutes. Inspect it with `crontab -l | grep signalradar`, remove it with `schedule disable`, or never install it at all:
+
+```bash
+signalradar.py config schedule.auto_enable false   # set this BEFORE your first add
+```
+
+**Your webhook URL is a bearer credential** — a Telegram bot token or Slack webhook path is embedded in it. It is never printed in full anywhere: delivery results, the alert envelope, `config` and `doctor` all show a masked form with a stable fingerprint (`https://api.telegram.org/*** (id:7c08e3b4)`). Set `SIGNALRADAR_REVEAL_SECRETS=1` if you need the real value.
+
+**Destination guards.** Webhook targets that resolve to loopback, private or link-local addresses are refused, and every redirect hop is re-checked. Override with `SIGNALRADAR_ALLOW_PRIVATE_WEBHOOK=1` if you deliver to a webhook on your own LAN.
+
+**Polymarket text is treated as untrusted data** — market questions are displayed, never executed as instructions.
+
 ## Runtime Data Directory
 
 SignalRadar stores user data outside the skill directory so `clawhub update` will not wipe your watchlist or baselines.
