@@ -43,7 +43,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # paths (copy the shipped JSON, or write this dict) and a key present in
     # only one of them exists or not depending on which path ran.
     "schedule": {
-        "auto_enable": True,
+        # null = ask before installing a crontab entry (the default).
+        # true = always install unattended. false = never install.
+        "auto_enable": None,
     },
 }
 

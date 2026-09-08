@@ -179,7 +179,7 @@ No other host is contacted. No telemetry, no analytics, nothing goes to the auth
 
 **Local writes** — everything under `~/.signalradar/` (or `$SIGNALRADAR_DATA_DIR`); config files `0600`, directories `0700`. Nothing else on your system is written, with one exception:
 
-**Background persistence.** After your first successful `add`, SignalRadar installs a tagged `crontab` entry that runs every 10 minutes. Inspect it with `crontab -l | grep signalradar`, remove it with `schedule disable`, or never install it at all:
+**Background persistence.** A recurring check runs from a tagged `crontab` entry that outlives your session. **SignalRadar asks before installing one** — after your first `add` the agent asks once, and nothing is written unless you agree (or you run `schedule 10` yourself; `--yes` in automation counts as agreement). Inspect with `crontab -l | grep signalradar`, remove with `schedule disable`, or refuse permanently:
 
 ```bash
 signalradar.py config schedule.auto_enable false   # set this BEFORE your first add

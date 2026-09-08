@@ -179,7 +179,7 @@ signalradar.py schedule disable      # 禁用自动监控
 
 **本地写入**——全部在 `~/.signalradar/`（或 `$SIGNALRADAR_DATA_DIR`）之下；配置文件 `0600`，目录 `0700`。系统上不写任何其他位置，只有一个例外：
 
-**后台常驻。** 首次 `add` 成功后，SignalRadar 会往你的 `crontab` 写入一条带标记的条目，每 10 分钟执行一次。用 `crontab -l | grep signalradar` 查看，用 `schedule disable` 移除，或者干脆不让它装：
+**后台常驻。** 周期检查靠一条带标记的 `crontab` 条目运行，它会在对话结束后继续存在。**SignalRadar 不会不问就装**——首次 `add` 后 agent 会问你一次，你不点头就不写（你也可以自己跑 `schedule 10`；自动化场景下的 `--yes` 视为同意）。用 `crontab -l | grep signalradar` 查看，`schedule disable` 移除，或永久拒绝：
 
 ```bash
 signalradar.py config schedule.auto_enable false   # 在首次 add 之前设置

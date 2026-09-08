@@ -7,7 +7,7 @@ Single source of truth: ~/.signalradar/config/watchlist.json
 
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import argparse
 import json
@@ -1868,7 +1868,7 @@ def _check_cron_status() -> dict[str, Any]:
     return status
 
 
-def _ensure_auto_monitoring(interval: int = 10, config_override: str = "", quiet: bool = False, driver: str = "auto") -> dict[str, Any]:
+def _ensure_auto_monitoring(interval: int = 10, config_override: str = "", quiet: bool = False, driver: str = "auto", assume_yes: bool = False) -> dict[str, Any]:
     """Check if cron exists; if not, set it up. Idempotent.
 
     schedule.auto_enable (default true) is checked HERE, in the single shared
@@ -1885,11 +1885,25 @@ def _ensure_auto_monitoring(interval: int = 10, config_override: str = "", quiet
     (platform announce path).
     """
     auto_cfg = _load_config(config_override)
-    if not bool(auto_cfg.get("schedule", {}).get("auto_enable", True)):
+    explicit = auto_cfg.get("schedule", {}).get("auto_enable")
+    if explicit is None:
+        # Unset means "ask". Installing a crontab entry changes the machine in a
+        # way that outlives the conversation, so a plain `add` no longer does it
+        # silently. Automation has no one to ask, so --yes keeps the old path:
+        # invoking a non-interactive flag IS the consent.
+        allowed = bool(assume_yes)
+        reason = ("Auto-monitoring not enabled: installing a background crontab entry needs your "
+                  "go-ahead. Enable with 'signalradar.py schedule 10', or set "
+                  "'config schedule.auto_enable true' to allow it automatically from now on.")
+    else:
+        allowed = bool(explicit)
+        reason = ("schedule.auto_enable is false — run 'signalradar.py schedule 10' to enable manually.")
+    if not allowed:
         return {
             "auto_enabled": False,
             "interval_minutes": interval,
-            "reason": "schedule.auto_enable is false — run 'signalradar.py schedule 10' to enable manually.",
+            "needs_consent": explicit is None,
+            "reason": reason,
         }
 
     cron_status = _check_cron_status()
@@ -2291,6 +2305,7 @@ def cmd_add(args: argparse.Namespace) -> int:
             interval=10,
             config_override=getattr(args, "config", ""),
             quiet=output_json,
+            assume_yes=bool(getattr(args, "yes", False)),
         )
 
     if output_json:
@@ -3787,6 +3802,7 @@ def _onboard_finalize(args: argparse.Namespace) -> int:
         interval=10,
         config_override=config_override,
         quiet=True,
+        assume_yes=bool(getattr(args, "yes", False)),
     )
 
     # Check route readiness for background push warning
@@ -4010,7 +4026,8 @@ def _onboarding(args: argparse.Namespace) -> int:
 
     # Auto-monitoring: enable after successful onboarding
     if added:
-        _ensure_auto_monitoring(interval=10, config_override=getattr(args, "config", ""))
+        _ensure_auto_monitoring(interval=10, config_override=getattr(args, "config", ""),
+                                assume_yes=bool(getattr(args, "yes", False)))
 
     return 0
 

@@ -30,6 +30,6 @@
     "cleanup_after_expiry_days": 90
   },
   "schedule": {
-    "auto_enable": true
+    "auto_enable": null
   }
 }
